@@ -1,4 +1,4 @@
-# CN Stock Quant
+# cn-stock-quant
 
 个人使用的 A 股日频量化研究、回测、模拟盘和后续实盘扩展平台。
 
