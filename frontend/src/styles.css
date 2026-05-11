@@ -1,0 +1,216 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f4f6f8;
+  color: #18202a;
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.appShell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 240px;
+  flex: 0 0 240px;
+  background: #17212f;
+  color: #eef3f8;
+  padding: 20px 14px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+  padding: 0 8px;
+}
+
+.brandMark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 8px;
+  background: #28a197;
+  color: white;
+  font-weight: 800;
+}
+
+.brandTitle {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.brandSub {
+  color: #9fb0c4;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.nav {
+  display: grid;
+  gap: 6px;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #c7d2df;
+  cursor: pointer;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.navItem.active,
+.navItem:hover {
+  background: #223247;
+  color: #ffffff;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: 28px;
+}
+
+.page {
+  display: grid;
+  gap: 18px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.toolbar,
+.formPanel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+}
+
+.toolbar .ant-input-affix-wrapper,
+.toolbar .ant-input {
+  width: 220px;
+}
+
+.toolbar .ant-input-textarea {
+  width: min(520px, 100%);
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.chartPanel {
+  width: 100%;
+  height: 380px;
+  background: #ffffff;
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.klineChart {
+  width: 100%;
+  height: 540px;
+  background: #ffffff;
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+}
+
+.panelTitle {
+  margin-bottom: 12px;
+  font-weight: 700;
+}
+
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.metricCard {
+  display: grid;
+  gap: 8px;
+  min-height: 86px;
+  align-content: center;
+  background: #ffffff;
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.metricCard span {
+  color: #607086;
+  font-size: 13px;
+}
+
+.metricCard strong {
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.metricCard.good strong {
+  color: #13795b;
+}
+
+.metricCard.bad strong {
+  color: #b42318;
+}
+
+.ruleGrid {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(80px, 120px);
+  gap: 12px;
+  max-width: 420px;
+}
+
+.ruleGrid span {
+  color: #607086;
+}
+
+@media (max-width: 760px) {
+  .appShell {
+    display: block;
+  }
+
+  .sidebar {
+    width: 100%;
+    padding: 14px;
+  }
+
+  .nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .main {
+    padding: 18px;
+  }
+}

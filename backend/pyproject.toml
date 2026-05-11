@@ -1,0 +1,10 @@
+[project]
+name = "cn-stock-quant-backend"
+version = "0.1.0"
+description = "Personal A-share quant research and backtest backend"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
