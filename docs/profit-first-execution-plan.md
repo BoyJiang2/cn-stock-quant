@@ -1,0 +1,83 @@
+# Profit-first execution plan
+
+This document is the working checklist for turning `cn-stock-quant` from a
+research demo into a profit-first quant workflow. Update it after each agent
+round so future agents can continue without rediscovering context.
+
+## P0: Prove Whether Current Strategy Can Make Money
+
+| ID | Item | Goal | Output | Owner | Status | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| P0-1 | Full-market `stable_reversal` backtest | Validate the first profit candidate | 2024/2025 report with return, drawdown, Sharpe, turnover | Codex | in progress | CLI added; full-market run still pending |
+| P0-2 | Parameter grid search | Find robust parameters, not one lucky setting | `top_n`, reversal window, amount threshold, exposure comparison | GLM | pending | Use CLI output as input |
+| P0-3 | Benchmark comparison | Check excess return vs 000300/000905/000852 | Excess return and relative drawdown table | Codex | pending | Start with local index bars |
+| P0-4 | Cost/slippage stress test | Ensure paper alpha survives costs | Commission/slippage matrix | DeepSeek | pending | Reuse same CLI with cost overrides |
+
+## P1: Make Backtests Trustworthy
+
+| ID | Item | Goal | Output | Owner | Status | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| P1-1 | Historical listing/delisting status | Reduce survivorship bias | `stock_status_history` table and sync task | DeepSeek | pending | Required before live confidence |
+| P1-2 | Historical ST status | Exclude risky/untradable names as-of date | `stock_risk_status_history` | DeepSeek | pending | Use provider confidence flags |
+| P1-3 | Historical index constituents | Real benchmark universes and CSI pools | `index_constituent_history` | GLM | pending | 000300/000905/000852 first |
+| P1-4 | PIT universe selector | Return tradable universe as of any date | `get_tradeable_universe(as_of)` | Codex | pending | Integrate into backtest API |
+| P1-5 | Gap classification | Separate suspension/listing/provider gaps | Upgraded data quality report | Codex | pending | Current report only counts missing bars |
+
+## P2: Build A Strategy Portfolio
+
+| ID | Item | Goal | Output | Owner | Status | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| P2-1 | Enhance `stable_reversal` | Improve the current candidate | Low-vol weighting, crowding penalty, better defaults | Codex | pending | Use P0 grid results |
+| P2-2 | Low-vol defensive rerun | Defensive return source | Full-market `low_vol_defensive` report | GLM | pending | Compare in bear/sideways regimes |
+| P2-3 | Inverse momentum strategy | Exploit negative 2025 momentum IC | `inverse_momentum` strategy | GLM | pending | Must be regime-filtered |
+| P2-4 | Market regime filter | Switch strategies by market state | `market_regime_filter` | DeepSeek | pending | Avoid one-strategy exposure |
+| P2-5 | Meta allocation | Allocate capital across strategies | Simple recent-performance allocator | Codex | pending | Not before P0 evidence |
+
+## P3: Add Machine Learning Alpha
+
+| ID | Item | Goal | Output | Owner | Status | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| P3-1 | LightGBM trainer | Train on current factor panel | `lightgbm_trainer.py` | DeepSeek | pending | Time-series split only |
+| P3-2 | ML prediction strategy | Convert prediction to target weights | `lightgbm_alpha` strategy | Codex | pending | Keep `dict[symbol -> weight]` |
+| P3-3 | Out-of-sample validation | Fight overfitting | Train/valid/test report | GLM | pending | Compare with `stable_reversal` |
+| P3-4 | Feature importance | Explain model edge | Importance report, optional SHAP later | DeepSeek | pending | Avoid black-box promotion |
+| P3-5 | Rolling training | Adapt to drift | Monthly/quarterly rolling train CLI | Codex | pending | After static model proves useful |
+
+## P4: Add News And Sentiment
+
+| ID | Item | Goal | Output | Owner | Status | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| P4-1 | `NewsProvider` protocol | Treat news as first-class data | Provider interface | Codex | pending | Keep source-agnostic |
+| P4-2 | AkShare news/announcement sync | Start with free data | News/announcement tables | GLM | pending | Data quality first |
+| P4-3 | Forum/social data feasibility | Find durable sentiment sources | Source feasibility report | GLM | pending | Snowball/Guba/Taoguba |
+| P4-4 | Sentiment scoring model | Daily stock sentiment factor | `sentiment_score` table | DeepSeek | pending | Chinese finance model later |
+| P4-5 | Sentiment factor backtest | Prove incremental value | Price vs price+sentiment comparison | Codex | pending | Avoid narrative-only signals |
+
+## P5: Simulation And Live Readiness
+
+| ID | Item | Goal | Output | Owner | Status | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| P5-1 | Paper portfolio loop | Daily plan and position update | Usable Portfolio page | Codex | pending | Use existing trade plan base |
+| P5-2 | Trade plan realism | Handle A-share constraints | Lot, cash, limit-up/down aware plan | DeepSeek | pending | Match backtest assumptions |
+| P5-3 | Risk rule upgrade | Prevent strategy blowups | Position, industry, drawdown, turnover limits | Codex | pending | Add alerts |
+| P5-4 | vn.py adapter research | Prepare live boundary | Broker adapter design | GLM | pending | No live trading before paper |
+| P5-5 | Paper observation period | Validate execution drift | Daily equity and fill report | Codex | pending | Minimum 1-3 months |
+
+## Promotion Gates
+
+Do not promote a strategy toward paper/live trading unless it passes all gates:
+
+- Annual return beats at least two of `000300`, `000905`, `000852`.
+- Maximum drawdown is lower than major benchmarks or return/drawdown is clearly better.
+- Cost-adjusted return remains positive under realistic commission, stamp tax, and slippage.
+- At least three neighboring parameter sets are profitable.
+- Out-of-sample period does not collapse.
+- Known non-PIT limitations are documented for the run.
+
+## Development Log
+
+- 2026-06-30: Plan created. P0-1 started. Current implemented candidate is `stable_reversal`.
+- 2026-06-30: Added `backend/run_strategy_backtest.py` for reproducible strategy backtests and parameter grids.
+- 2026-06-30: Unified backtest research-pool cap to 6000 and included BJ in `select_research_symbols`; kept normal research-sync defaults at SH/SZ.
+- 2026-06-30: Fixed buy execution cash handling when the 5 yuan minimum commission would otherwise make cash negative.
+- 2026-06-30: Smoke run passed: `stable_reversal`, 2025-01-01 to 2025-03-31, 100 symbols, 5-day rebalance, `total_return=0.005602`, `benchmark_return=0.017514`, `excess_return=-0.011913`. This validates the CLI only; it is not enough investment evidence.

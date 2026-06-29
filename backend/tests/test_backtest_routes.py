@@ -19,6 +19,7 @@ from app.core.database import get_session
 from app.main import create_app
 from app.models.entities import Base, DailyBar, IndexDailyBar, Stock
 from app.models.pit import SecurityStatus
+from app.schemas.backtest import BacktestRequest
 
 
 def _make_session_factory() -> sessionmaker:
@@ -503,7 +504,7 @@ def test_run_backtest_pool_max_symbols_above_max_returns_422():
         "/api/backtests/run",
         json={
             "symbol_source": "research_pool",
-            "pool_max_symbols": 301,
+            "pool_max_symbols": 6001,
             "benchmark_symbol": None,
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
@@ -699,3 +700,31 @@ def test_run_backtest_research_pool_stock_with_few_bars_excluded():
 
     assert response.status_code == 400
     assert "research" in response.json()["detail"].lower()
+
+
+def test_backtest_request_allows_large_research_pool():
+    request = BacktestRequest(
+        strategy_name="stable_reversal",
+        symbol_source="research_pool",
+        pool_max_symbols=6000,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 12, 31),
+    )
+
+    assert request.pool_max_symbols == 6000
+
+
+def test_backtest_request_rejects_unbounded_research_pool():
+    from pydantic import ValidationError
+
+    try:
+        BacktestRequest(
+            strategy_name="stable_reversal",
+            symbol_source="research_pool",
+            pool_max_symbols=6001,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 12, 31),
+        )
+    except ValidationError:
+        return
+    raise AssertionError("pool_max_symbols above 6000 should be rejected")

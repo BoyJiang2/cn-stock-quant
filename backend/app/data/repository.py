@@ -544,7 +544,7 @@ class MarketDataRepository:
         limit: int = 100,
         min_trading_days: int | None = None,
         min_coverage_ratio: float = 0.8,
-        exchanges: tuple[str, ...] = ("SH", "SZ"),
+        exchanges: tuple[str, ...] = ("SH", "SZ", "BJ"),
         exclude_risk_names: bool = True,
     ) -> list[str]:
         """Return research-pool symbols with useful data in *start_date* … *end_date*.
@@ -597,7 +597,7 @@ class MarketDataRepository:
             .group_by(DailyBar.symbol)
             .having(func.count(func.distinct(DailyBar.trade_date)) >= effective_min)
             .order_by(func.count(func.distinct(DailyBar.trade_date)).desc())
-            .limit(max(1, min(int(limit), 300)))
+            .limit(max(1, min(int(limit), 6000)))
         )
 
         rows = self.session.execute(bar_counts).all()

@@ -192,6 +192,11 @@ def _execute_target_weights(
                     amount = qty * trade_price
                     commission = max(amount * config.commission_rate, 5.0) if qty else 0.0
                     total_cost = amount + commission
+                while qty > 0 and total_cost > cash:
+                    qty -= config.lot_size
+                    amount = qty * trade_price
+                    commission = max(amount * config.commission_rate, 5.0) if qty else 0.0
+                    total_cost = amount + commission
                 if qty <= 0:
                     continue
                 cash -= total_cost

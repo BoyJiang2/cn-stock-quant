@@ -111,6 +111,41 @@ def test_signal_generated_today_executes_next_trading_day():
     assert result.trades[0]["trade_date"] == start + timedelta(days=1)
 
 
+def test_buy_execution_respects_minimum_commission_cash_constraint():
+    start = date(2024, 1, 1)
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "trade_date": start + timedelta(days=i),
+                "open": 10,
+                "high": 10,
+                "low": 10,
+                "close": 10,
+                "volume": 100000,
+                "amount": 1000000,
+            }
+            for i in range(2)
+        ]
+    )
+
+    result = DailyBacktestEngine().run(
+        strategy=AlwaysLongStrategy(),
+        bars=bars,
+        config=BacktestConfig(
+            start_date=start,
+            end_date=start + timedelta(days=1),
+            initial_cash=1004.0,
+            commission_rate=0.0003,
+            stamp_tax_rate=0,
+            slippage_rate=0,
+        ),
+    )
+
+    assert result.trades == []
+    assert result.equity_curve[-1]["cash"] >= 0.0
+
+
 def test_rebalance_interval_controls_signal_generation_dates():
     start = date(2024, 1, 1)
     bars = pd.DataFrame(

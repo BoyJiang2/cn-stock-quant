@@ -436,6 +436,59 @@ def test_covered_research_symbols_can_return_large_factor_universe():
     assert "000010" in symbols  # Beijing exchange is included by default.
 
 
+def test_select_research_symbols_can_return_large_backtest_universe():
+    repository = make_repository()
+    repository.upsert_trading_calendar(
+        pd.DataFrame(
+            [
+                {"trade_date": date(2024, 1, 1), "is_open": True},
+                {"trade_date": date(2024, 1, 2), "is_open": True},
+            ]
+        )
+    )
+    rows = [
+        {
+            "symbol": f"{i:06d}",
+            "name": f"Name {i:06d}",
+            "exchange": "BJ" if i % 10 == 0 else "SZ",
+            "status": "active",
+        }
+        for i in range(1, 351)
+    ]
+    repository.upsert_stocks(pd.DataFrame(rows))
+    for row in rows:
+        symbol = row["symbol"]
+        repository.replace_daily_bars(
+            symbol,
+            date(2024, 1, 1),
+            date(2024, 1, 2),
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": symbol,
+                        "trade_date": trade_date,
+                        "open": 10.0,
+                        "high": 10.0,
+                        "low": 10.0,
+                        "close": 10.0,
+                        "volume": 1000.0,
+                        "amount": 10000.0,
+                    }
+                    for trade_date in (date(2024, 1, 1), date(2024, 1, 2))
+                ]
+            ),
+        )
+
+    symbols = repository.select_research_symbols(
+        date(2024, 1, 1),
+        date(2024, 1, 2),
+        limit=350,
+    )
+
+    assert len(symbols) == 350
+    assert "000010" in symbols  # Beijing exchange is included by default.
+
+
 def test_select_research_symbols_supports_single_trading_day():
     repository = make_repository()
     repository.upsert_stocks(

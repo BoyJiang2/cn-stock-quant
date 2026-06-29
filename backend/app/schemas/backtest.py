@@ -8,7 +8,7 @@ class BacktestRequest(BaseModel):
     strategy_name: str = "moving_average"
     symbol_source: Literal["manual", "research_pool"] = "manual"
     symbols: list[str] = Field(default_factory=lambda: ["000001"])
-    pool_max_symbols: int = Field(default=100, ge=1, le=300)
+    pool_max_symbols: int = Field(default=100, ge=1, le=6000)
     point_in_time: bool = False
     universe_as_of_date: date | None = None
     pit_st_policy: Literal["exclude_known", "include_unknown", "strict"] = "exclude_known"
