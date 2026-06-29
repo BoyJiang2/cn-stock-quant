@@ -73,6 +73,14 @@ GLM 新增因子复核：
 - DeepSeek：复核 Qlib LightGBM 接入边界，提出最小可落地的数据格式、训练入口和回测接线方案。
 - 三方集成后，先把最强的组合因子策略接入现有 `dict[symbol -> weight]` 策略接口，再做 Qlib LightGBM 和新闻情绪模型。
 
+## 2026-06-30 三方协同结果
+
+- GLM 复核结论：优先实现 `amount_stability_20d + reversal_5d` 的稳定反转组合；低波可作为辅助权重或过滤；`log_amount_20d` 和 `amount_ratio_5d_20d` 更适合作为拥挤惩罚。
+- DeepSeek 复核结论：Qlib/LightGBM 初期不要整套引入 Qlib 框架，先新增薄训练器，把现有 `FactorLab` 的 `MultiIndex(trade_date, symbol)` 因子面板对齐 forward return 标签，训练 LightGBM 后把预测截面转成 `dict[symbol -> weight]`。
+- GPT 复核结论：新增组合因子策略必须补完整 `dict` 输出、注册发现、方向和仓位 cap 测试，避免前端和回测入口看不到策略。
+- Codex 落地：新增内置策略 `stable_reversal`，直接从 OHLCV 历史计算成交额稳定性、5 日反转、低波辅助分，并提供流动性、价格和短期放量拥挤过滤。
+- 验证：`python -m pytest backend\tests -q` 通过，当前为 `456 passed`。
+
 ## 风险和限制
 
 - 当前股票池不是历史时点股票池，存在幸存者偏差。

@@ -488,9 +488,176 @@ class LowVolDefensiveStrategy(Strategy):
         return {s: selected_map.get(s, 0.0) for s in all_symbols}
 
 
+class StableReversalStrategy(Strategy):
+    name = "stable_reversal"
+    display_name = "Stable Reversal"
+    description = (
+        "Ranks liquid stocks by stable traded amount and short-term reversal, "
+        "then equal-weights the best candidates under position and total caps."
+    )
+    parameters = [
+        StrategyParameter("reversal_window", "Reversal window", "int", 5, min=1, step=1),
+        StrategyParameter("stability_window", "Amount stability window", "int", 20, min=2, step=1),
+        StrategyParameter("volatility_window", "Volatility window", "int", 20, min=2, step=1),
+        StrategyParameter("amount_ratio_short_window", "Short amount window", "int", 5, min=1, step=1),
+        StrategyParameter("amount_ratio_long_window", "Long amount window", "int", 20, min=2, step=1),
+        StrategyParameter("top_n", "Position count", "int", 20, min=1, step=1),
+        StrategyParameter("max_position_weight", "Single-name cap", "float", 0.05, min=0.0, max=1.0, step=0.01),
+        StrategyParameter("max_total_weight", "Total exposure", "float", 0.8, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("min_avg_amount_20d", "20d amount floor", "float", 50_000_000, min=0.0, step=1_000_000),
+        StrategyParameter("min_price", "Minimum price", "float", 5.0, min=0.0, step=0.1),
+        StrategyParameter("min_reversal", "Minimum reversal", "float", 0.0, step=0.01),
+        StrategyParameter("max_amount_ratio", "Crowding ratio cap", "float", 2.5, min=0.0, step=0.1),
+        StrategyParameter("low_vol_weight", "Low-vol score weight", "float", 0.2, min=0.0, max=1.0, step=0.05),
+    ]
+
+    @staticmethod
+    def _percentiles(values: list[float]) -> list[float]:
+        if len(values) <= 1:
+            return [1.0] * len(values)
+        ranks = pd.Series(values).rank(ascending=True, method="average")
+        return [float((rank - 1.0) / (len(values) - 1.0)) for rank in ranks]
+
+    def generate_target_weights(
+        self, context: StrategyContext, history: pd.DataFrame
+    ) -> dict[str, float]:
+        if history.empty:
+            return {}
+
+        reversal_window = int(context.params.get("reversal_window", 5))
+        stability_window = int(context.params.get("stability_window", 20))
+        volatility_window = int(context.params.get("volatility_window", 20))
+        amount_short_window = int(context.params.get("amount_ratio_short_window", 5))
+        amount_long_window = int(context.params.get("amount_ratio_long_window", 20))
+        top_n = max(1, int(context.params.get("top_n", 20)))
+        max_position_weight = float(context.params.get("max_position_weight", 0.05))
+        max_total_weight = float(context.params.get("max_total_weight", 0.8))
+        min_avg_amount_20d = float(context.params.get("min_avg_amount_20d", 50_000_000))
+        min_price = float(context.params.get("min_price", 5.0))
+        min_reversal = float(context.params.get("min_reversal", 0.0))
+        max_amount_ratio = float(context.params.get("max_amount_ratio", 2.5))
+        low_vol_weight = float(context.params.get("low_vol_weight", 0.2))
+
+        for name, value in [
+            ("reversal_window", reversal_window),
+            ("stability_window", stability_window),
+            ("volatility_window", volatility_window),
+            ("amount_ratio_short_window", amount_short_window),
+            ("amount_ratio_long_window", amount_long_window),
+        ]:
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}")
+
+        for name, value in [
+            ("max_position_weight", max_position_weight),
+            ("max_total_weight", max_total_weight),
+            ("low_vol_weight", low_vol_weight),
+        ]:
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+
+        for name, value in [
+            ("min_avg_amount_20d", min_avg_amount_20d),
+            ("min_price", min_price),
+            ("max_amount_ratio", max_amount_ratio),
+        ]:
+            if value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+
+        all_symbols = list(history["symbol"].unique())
+        min_len = max(
+            reversal_window + 1,
+            stability_window,
+            volatility_window + 1,
+            amount_short_window,
+            amount_long_window,
+            20,
+        )
+        candidates: list[dict[str, float | str]] = []
+        for symbol, group in history.groupby("symbol"):
+            ordered = group.sort_values("trade_date")
+            if len(ordered) < min_len:
+                continue
+            if "amount" not in ordered.columns:
+                continue
+
+            closes = ordered["close"].astype(float)
+            amounts = ordered["amount"].astype(float)
+            latest_close = float(closes.iloc[-1])
+            if latest_close < min_price:
+                continue
+
+            avg_amount_20d = float(amounts.tail(20).mean())
+            if min_avg_amount_20d > 0.0 and avg_amount_20d < min_avg_amount_20d:
+                continue
+
+            amount_ratio = (
+                float(amounts.tail(amount_short_window).mean())
+                / float(amounts.tail(amount_long_window).mean())
+            )
+            if max_amount_ratio > 0.0 and amount_ratio > max_amount_ratio:
+                continue
+
+            base_price = float(closes.iloc[-reversal_window - 1])
+            if base_price <= 0.0 or latest_close <= 0.0:
+                continue
+            reversal = base_price / latest_close - 1.0
+            if reversal < min_reversal:
+                continue
+
+            amount_tail = amounts.tail(stability_window)
+            amount_std = float(amount_tail.std())
+            if amount_std <= 0.0 or pd.isna(amount_std):
+                continue
+            amount_stability = float(amount_tail.mean()) / amount_std
+
+            returns = closes.tail(volatility_window + 1).pct_change().dropna()
+            volatility = float(returns.std())
+            if volatility <= 0.0 or pd.isna(volatility):
+                continue
+
+            candidates.append(
+                {
+                    "symbol": str(symbol),
+                    "amount_stability": amount_stability,
+                    "reversal": float(reversal),
+                    "low_vol": -volatility,
+                }
+            )
+
+        if not candidates:
+            return {symbol: 0.0 for symbol in all_symbols}
+
+        stability_pct = self._percentiles(
+            [float(item["amount_stability"]) for item in candidates]
+        )
+        reversal_pct = self._percentiles([float(item["reversal"]) for item in candidates])
+        low_vol_pct = self._percentiles([float(item["low_vol"]) for item in candidates])
+
+        factor_weight = max(0.0, 1.0 - low_vol_weight)
+        for index, item in enumerate(candidates):
+            item["score"] = (
+                factor_weight * (0.55 * stability_pct[index] + 0.45 * reversal_pct[index])
+                + low_vol_weight * low_vol_pct[index]
+            )
+
+        selected = sorted(
+            candidates,
+            key=lambda item: (float(item["score"]), float(item["reversal"])),
+            reverse=True,
+        )[:top_n]
+        weight = min(max_position_weight, max_total_weight / len(selected))
+        selected_symbols = {str(item["symbol"]) for item in selected}
+        return {
+            symbol: (weight if symbol in selected_symbols else 0.0)
+            for symbol in all_symbols
+        }
+
+
 BUILTIN_STRATEGIES: dict[str, type[Strategy]] = {
     MovingAverageStrategy.name: MovingAverageStrategy,
     MomentumRankStrategy.name: MomentumRankStrategy,
     MeanReversionStrategy.name: MeanReversionStrategy,
     LowVolDefensiveStrategy.name: LowVolDefensiveStrategy,
+    StableReversalStrategy.name: StableReversalStrategy,
 }
