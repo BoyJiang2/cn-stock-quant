@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import get_session
 from app.main import create_app
 from app.models.entities import Base, DailyBar, Stock
+from app.schemas.factors import FactorExperimentRequest
 
 
 def _client() -> TestClient:
@@ -88,6 +89,19 @@ def test_factor_experiment_runs_and_returns_json_safe_summary():
     assert len(body["selected_symbols"]) == 5
     assert len(body["summaries"]) == 2
     assert body["warnings"]
+    assert any("not point-in-time" in warning for warning in body["warnings"])
+    assert body["run_metadata"]["run_hash"]
+    assert body["run_metadata"]["selected_symbol_count"] == 5
+    assert body["run_metadata"]["selected_symbols"] == [
+        "000001",
+        "000002",
+        "000003",
+        "000004",
+        "000005",
+    ]
+    assert body["run_metadata"]["factor_names"] == ["momentum_5d", "volatility_20d"]
+    assert body["run_metadata"]["point_in_time"] is False
+    assert body["run_metadata"]["degraded"] is True
     assert all(summary["n_dates"] >= 0 for summary in body["summaries"])
 
 
@@ -105,3 +119,27 @@ def test_factor_experiment_rejects_unknown_factor():
 
     assert response.status_code == 400
     assert "Unknown factors" in response.json()["detail"]
+
+
+def test_factor_experiment_schema_allows_large_universe_for_research_runs():
+    request = FactorExperimentRequest(
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 12, 31),
+        pool_max_symbols=6000,
+    )
+
+    assert request.pool_max_symbols == 6000
+
+
+def test_factor_experiment_schema_rejects_unbounded_universe():
+    from pydantic import ValidationError
+
+    try:
+        FactorExperimentRequest(
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 12, 31),
+            pool_max_symbols=6001,
+        )
+    except ValidationError:
+        return
+    raise AssertionError("pool_max_symbols above 6000 should be rejected")

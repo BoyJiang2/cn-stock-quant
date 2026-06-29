@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 class FactorExperimentRequest(BaseModel):
     symbol_source: Literal["manual", "research_pool"] = "research_pool"
     symbols: list[str] = Field(default_factory=list)
-    pool_max_symbols: int = Field(default=100, ge=5, le=300)
+    pool_max_symbols: int = Field(default=100, ge=5, le=6000)
     factor_names: list[str] = Field(default_factory=list)
     start_date: date
     end_date: date
@@ -39,4 +39,5 @@ class FactorExperimentResponse(BaseModel):
     horizon: int
     n_groups: int
     warnings: list[str]
+    run_metadata: dict[str, Any] = Field(default_factory=dict)
     summaries: list[FactorSummaryOut]

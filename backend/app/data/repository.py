@@ -510,7 +510,7 @@ class MarketDataRepository:
         start_date: date,
         end_date: date,
         limit: int = 100,
-        exchanges: tuple[str, ...] = ("SH", "SZ"),
+        exchanges: tuple[str, ...] = ("SH", "SZ", "BJ"),
         exclude_risk_names: bool = True,
     ) -> list[str]:
         coverage = (
@@ -532,7 +532,7 @@ class MarketDataRepository:
                 coverage.c.end_date >= end_date,
             )
             .order_by(Stock.symbol)
-            .limit(max(1, min(int(limit), 300)))
+            .limit(max(1, min(int(limit), 6000)))
         )
         return list(self.session.scalars(stmt))
 
