@@ -81,3 +81,13 @@ Do not promote a strategy toward paper/live trading unless it passes all gates:
 - 2026-06-30: Unified backtest research-pool cap to 6000 and included BJ in `select_research_symbols`; kept normal research-sync defaults at SH/SZ.
 - 2026-06-30: Fixed buy execution cash handling when the 5 yuan minimum commission would otherwise make cash negative.
 - 2026-06-30: Smoke run passed: `stable_reversal`, 2025-01-01 to 2025-03-31, 100 symbols, 5-day rebalance, `total_return=0.005602`, `benchmark_return=0.017514`, `excess_return=-0.011913`. This validates the CLI only; it is not enough investment evidence.
+- 2026-06-30: Full-market 2025 baseline, 5-day rebalance, default costs: `selected_symbol_count=5183`, `total_return=0.113974`, `benchmark_return=0.211901`, `excess_return=-0.097927`, `max_drawdown=-0.154943`, `sharpe=0.738009`, turnover on initial cash `71.218711`.
+- 2026-06-30: Full-market 2025, 10-day rebalance, default costs: `total_return=0.066735`, `benchmark_return=0.211901`, `excess_return=-0.145166`, `max_drawdown=-0.131511`, turnover `36.453399`.
+- 2026-06-30: Full-market 2025, 5-day rebalance, zero commission/stamp/slippage after fixing zero-cost commission handling: `total_return=0.218988`, `benchmark_return=0.211901`, `excess_return=0.007087`, `max_drawdown=-0.150144`, `sharpe=1.277301`, turnover `74.50572`.
+
+## Current P0 Read
+
+- `stable_reversal` has weak gross alpha in 2025: it barely beats 000300 before costs.
+- Default real-world costs erase the edge because turnover is extremely high.
+- The next optimization target is not simply higher return; it is lower turnover with similar gross return.
+- Prioritize grid dimensions that reduce churn: higher `top_n`, higher `min_reversal`, stricter `max_amount_ratio`, longer rebalance interval with hysteresis, and a future hold-buffer rule.

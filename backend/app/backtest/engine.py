@@ -181,7 +181,7 @@ def _execute_target_weights(
                 continue
 
             amount = qty * trade_price
-            commission = max(amount * config.commission_rate, 5.0)
+            commission = _commission(amount, config.commission_rate)
             stamp_tax = amount * config.stamp_tax_rate if side == "sell" else 0.0
 
             if side == "buy":
@@ -190,12 +190,12 @@ def _execute_target_weights(
                     affordable_qty = int((cash / (trade_price * (1 + config.commission_rate))) // config.lot_size * config.lot_size)
                     qty = max(0, affordable_qty)
                     amount = qty * trade_price
-                    commission = max(amount * config.commission_rate, 5.0) if qty else 0.0
+                    commission = _commission(amount, config.commission_rate) if qty else 0.0
                     total_cost = amount + commission
                 while qty > 0 and total_cost > cash:
                     qty -= config.lot_size
                     amount = qty * trade_price
-                    commission = max(amount * config.commission_rate, 5.0) if qty else 0.0
+                    commission = _commission(amount, config.commission_rate) if qty else 0.0
                     total_cost = amount + commission
                 if qty <= 0:
                     continue
@@ -209,7 +209,7 @@ def _execute_target_weights(
                 if qty <= 0:
                     continue
                 amount = qty * trade_price
-                commission = max(amount * config.commission_rate, 5.0)
+                commission = _commission(amount, config.commission_rate)
                 stamp_tax = amount * config.stamp_tax_rate
                 cash += amount - commission - stamp_tax
                 _consume_lots(lots.setdefault(symbol, []), qty, current_date)
@@ -237,6 +237,12 @@ def _execute_target_weights(
 
 def _position_value(positions: dict[str, int], last_prices: dict[str, float]) -> float:
     return sum(qty * last_prices.get(symbol, 0.0) for symbol, qty in positions.items())
+
+
+def _commission(amount: float, commission_rate: float) -> float:
+    if commission_rate <= 0:
+        return 0.0
+    return max(amount * commission_rate, 5.0)
 
 
 def _sellable_quantity(symbol_lots: list[dict], current_date: date) -> int:
