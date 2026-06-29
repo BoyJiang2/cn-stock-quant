@@ -84,6 +84,12 @@ Do not promote a strategy toward paper/live trading unless it passes all gates:
 - 2026-06-30: Full-market 2025 baseline, 5-day rebalance, default costs: `selected_symbol_count=5183`, `total_return=0.113974`, `benchmark_return=0.211901`, `excess_return=-0.097927`, `max_drawdown=-0.154943`, `sharpe=0.738009`, turnover on initial cash `71.218711`.
 - 2026-06-30: Full-market 2025, 10-day rebalance, default costs: `total_return=0.066735`, `benchmark_return=0.211901`, `excess_return=-0.145166`, `max_drawdown=-0.131511`, turnover `36.453399`.
 - 2026-06-30: Full-market 2025, 5-day rebalance, zero commission/stamp/slippage after fixing zero-cost commission handling: `total_return=0.218988`, `benchmark_return=0.211901`, `excess_return=0.007087`, `max_drawdown=-0.150144`, `sharpe=1.277301`, turnover `74.50572`.
+- 2026-06-30: Added `stable_reversal` rank hysteresis parameters: `hold_rank_multiplier` retains existing positions that remain inside the hold buffer; `entry_rank_multiplier` controls how far down new entries may come from. This targets turnover near the selection boundary.
+- 2026-06-30: GLM proposed low-turnover grids. Full-market 2025 with 10-day rebalance and default costs:
+  - `G4_extreme_low_turnover`: `top_n=80`, `min_reversal=0.02`, `max_amount_ratio=1.6`, `low_vol_weight=0.3`, `hold_rank_multiplier=1.4`, `total_return=0.113111`, `excess_return=-0.09879`, `max_drawdown=-0.10509`, `sharpe=0.892717`, turnover `31.102737`.
+  - `G1_wide_low_turnover`: `total_return=0.110767`, `excess_return=-0.101134`, `max_drawdown=-0.114946`, `sharpe=0.809594`, turnover `33.958062`.
+  - `G2_tight_reversal`: `total_return=0.102014`, `excess_return=-0.109887`, `max_drawdown=-0.140175`, `sharpe=0.648505`, turnover `35.192906`.
+- 2026-06-30: `G4_extreme_low_turnover` zero-cost run: `total_return=0.173592`, `benchmark_return=0.211901`, `excess_return=-0.038309`, `max_drawdown=-0.103647`, `sharpe=1.296044`, turnover `31.984806`.
 
 ## Current P0 Read
 
@@ -91,3 +97,5 @@ Do not promote a strategy toward paper/live trading unless it passes all gates:
 - Default real-world costs erase the edge because turnover is extremely high.
 - The next optimization target is not simply higher return; it is lower turnover with similar gross return.
 - Prioritize grid dimensions that reduce churn: higher `top_n`, higher `min_reversal`, stricter `max_amount_ratio`, longer rebalance interval with hysteresis, and a future hold-buffer rule.
+- The first hysteresis/grid round improved drawdown and cut turnover by more than half, but did not restore benchmark outperformance. Treat `stable_reversal` as a defensive sleeve candidate, not the main profit engine.
+- Next profit search should shift toward inverse momentum, low-vol defensive, and LightGBM factor blending instead of overfitting this one rule.

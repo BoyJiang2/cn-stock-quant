@@ -74,7 +74,7 @@ def _grid_params(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.grid_json is None:
         return [base]
 
-    loaded = json.loads(args.grid_json.read_text(encoding="utf-8"))
+    loaded = json.loads(args.grid_json.read_text(encoding="utf-8-sig"))
     if not isinstance(loaded, list):
         raise ValueError("--grid-json must contain a JSON list of parameter objects.")
     grid: list[dict[str, Any]] = []

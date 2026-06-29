@@ -509,6 +509,8 @@ class StableReversalStrategy(Strategy):
         StrategyParameter("min_reversal", "Minimum reversal", "float", 0.0, step=0.01),
         StrategyParameter("max_amount_ratio", "Crowding ratio cap", "float", 2.5, min=0.0, step=0.1),
         StrategyParameter("low_vol_weight", "Low-vol score weight", "float", 0.2, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("hold_rank_multiplier", "Hold rank buffer", "float", 1.0, min=1.0, step=0.1),
+        StrategyParameter("entry_rank_multiplier", "Entry rank buffer", "float", 1.0, min=1.0, step=0.1),
     ]
 
     @staticmethod
@@ -537,6 +539,8 @@ class StableReversalStrategy(Strategy):
         min_reversal = float(context.params.get("min_reversal", 0.0))
         max_amount_ratio = float(context.params.get("max_amount_ratio", 2.5))
         low_vol_weight = float(context.params.get("low_vol_weight", 0.2))
+        hold_rank_multiplier = float(context.params.get("hold_rank_multiplier", 1.0))
+        entry_rank_multiplier = float(context.params.get("entry_rank_multiplier", 1.0))
 
         for name, value in [
             ("reversal_window", reversal_window),
@@ -560,9 +564,17 @@ class StableReversalStrategy(Strategy):
             ("min_avg_amount_20d", min_avg_amount_20d),
             ("min_price", min_price),
             ("max_amount_ratio", max_amount_ratio),
+            ("hold_rank_multiplier", hold_rank_multiplier),
+            ("entry_rank_multiplier", entry_rank_multiplier),
         ]:
             if value < 0.0:
                 raise ValueError(f"{name} must be >= 0, got {value}")
+        for name, value in [
+            ("hold_rank_multiplier", hold_rank_multiplier),
+            ("entry_rank_multiplier", entry_rank_multiplier),
+        ]:
+            if value < 1.0:
+                raise ValueError(f"{name} must be >= 1, got {value}")
 
         all_symbols = list(history["symbol"].unique())
         min_len = max(
@@ -645,11 +657,39 @@ class StableReversalStrategy(Strategy):
             candidates,
             key=lambda item: (float(item["score"]), float(item["reversal"])),
             reverse=True,
-        )[:top_n]
-        weight = min(max_position_weight, max_total_weight / len(selected))
-        selected_symbols = {str(item["symbol"]) for item in selected}
+        )
+        rank_by_symbol = {
+            str(item["symbol"]): rank
+            for rank, item in enumerate(selected, start=1)
+        }
+        hold_cutoff = max(top_n, int(top_n * hold_rank_multiplier))
+        entry_cutoff = max(top_n, int(top_n * entry_rank_multiplier))
+        retained_symbols = {
+            symbol
+            for symbol, quantity in context.positions.items()
+            if quantity > 0 and rank_by_symbol.get(symbol, hold_cutoff + 1) <= hold_cutoff
+        }
+        selected_symbols: list[str] = [
+            str(item["symbol"])
+            for item in selected
+            if str(item["symbol"]) in retained_symbols
+        ][:top_n]
+        for item in selected:
+            symbol = str(item["symbol"])
+            if len(selected_symbols) >= top_n:
+                break
+            if symbol in retained_symbols or symbol in selected_symbols:
+                continue
+            if rank_by_symbol[symbol] > entry_cutoff:
+                continue
+            selected_symbols.append(symbol)
+
+        if not selected_symbols:
+            return {symbol: 0.0 for symbol in all_symbols}
+        weight = min(max_position_weight, max_total_weight / len(selected_symbols))
+        selected_symbol_set = set(selected_symbols)
         return {
-            symbol: (weight if symbol in selected_symbols else 0.0)
+            symbol: (weight if symbol in selected_symbol_set else 0.0)
             for symbol in all_symbols
         }
 
