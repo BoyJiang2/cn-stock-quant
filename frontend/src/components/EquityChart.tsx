@@ -1,13 +1,14 @@
 import * as echarts from "echarts";
 import { useEffect, useRef } from "react";
 
-import type { EquityPoint } from "../types";
+import type { BenchmarkPoint, EquityPoint } from "../types";
 
 interface EquityChartProps {
   data: EquityPoint[];
+  benchmark?: BenchmarkPoint[];
 }
 
-export function EquityChart({ data }: EquityChartProps) {
+export function EquityChart({ data, benchmark = [] }: EquityChartProps) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -15,13 +16,15 @@ export function EquityChart({ data }: EquityChartProps) {
       return;
     }
 
+    const benchmarkByDate = new Map(benchmark.map((point) => [point.trade_date, point.equity]));
     const chart = echarts.init(ref.current);
     chart.setOption({
       animation: false,
       grid: [
-        { left: 54, right: 24, top: 28, height: 190 },
+        { left: 54, right: 24, top: 34, height: 184 },
         { left: 54, right: 24, top: 260, height: 92 }
       ],
+      legend: { data: ["Equity", "Benchmark", "Drawdown"], top: 0 },
       tooltip: { trigger: "axis" },
       xAxis: [
         { type: "category", data: data.map((point) => point.trade_date), boundaryGap: false },
@@ -39,7 +42,7 @@ export function EquityChart({ data }: EquityChartProps) {
       ],
       series: [
         {
-          name: "权益",
+          name: "Equity",
           type: "line",
           data: data.map((point) => point.equity),
           smooth: true,
@@ -47,7 +50,15 @@ export function EquityChart({ data }: EquityChartProps) {
           lineStyle: { color: "#13795b", width: 2 }
         },
         {
-          name: "回撤",
+          name: "Benchmark",
+          type: "line",
+          data: data.map((point) => benchmarkByDate.get(point.trade_date) ?? null),
+          smooth: true,
+          symbol: "none",
+          lineStyle: { color: "#475467", width: 1.8, type: "dashed" }
+        },
+        {
+          name: "Drawdown",
           type: "line",
           xAxisIndex: 1,
           yAxisIndex: 1,
@@ -65,7 +76,7 @@ export function EquityChart({ data }: EquityChartProps) {
       window.removeEventListener("resize", resize);
       chart.dispose();
     };
-  }, [data]);
+  }, [data, benchmark]);
 
   return <div className="chartPanel" ref={ref} />;
 }

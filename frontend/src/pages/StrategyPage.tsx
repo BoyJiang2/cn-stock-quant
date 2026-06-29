@@ -1,18 +1,17 @@
-import { Table, Tag } from "antd";
+import { Table, Tag, message } from "antd";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
-
-interface StrategyItem {
-  name: string;
-  display_name: string;
-}
+import type { StrategyItem } from "../types";
 
 export function StrategyPage() {
   const [strategies, setStrategies] = useState<StrategyItem[]>([]);
 
   useEffect(() => {
-    api.get<StrategyItem[]>("/api/strategies").then((response) => setStrategies(response.data));
+    api
+      .get<StrategyItem[]>("/api/strategies")
+      .then((response) => setStrategies(response.data))
+      .catch(() => message.error("策略列表加载失败"));
   }, []);
 
   return (
@@ -22,9 +21,18 @@ export function StrategyPage() {
         columns={[
           { title: "策略 ID", dataIndex: "name" },
           { title: "名称", dataIndex: "display_name" },
+          { title: "说明", dataIndex: "description" },
+          {
+            title: "参数",
+            render: (_, row) => row.parameters.map((parameter) => parameter.label).join(" / ")
+          },
           {
             title: "状态",
-            render: () => <Tag color="green">内置</Tag>
+            render: (_, row) => (
+              <Tag color={row.source === "builtin" ? "green" : "blue"}>
+                {row.source === "builtin" ? "内置" : "用户"}
+              </Tag>
+            )
           }
         ]}
         dataSource={strategies}
@@ -34,4 +42,3 @@ export function StrategyPage() {
     </section>
   );
 }
-

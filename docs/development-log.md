@@ -107,3 +107,119 @@ v0.2 已完成：
 - 批量同步 `000001.SZ, 600000, BAD001` 返回：2 个可用缓存、1 个非法代码失败。
 - `python -m pytest backend\tests` 通过，4 个测试全部通过。
 - `npm run build` 通过。
+
+## 2026-06-17 策略框架与后续规划
+
+本轮目标：
+
+- 将策略模块从单个示例策略升级为可扩展策略体系。
+- 基于 A 股日频约束，确定下一步优先做可信回测底座和完整版动量策略。
+
+已完成：
+
+- 策略基类增加参数元信息、策略说明和来源字段。
+- 策略注册表支持内置策略和 `strategies/` 用户策略目录加载。
+- 前端回测页根据策略元信息动态生成参数表单。
+- 新增内置策略：动量排序、均值回归。
+- 升级动量排序策略，增加跳过近期、流动性过滤、单票上限和组合仓位参数。
+- README 增加本机稳定启动方式，明确使用 `D:\anaconda3\python.exe` 启动后端。
+
+协作安排：
+
+- 主线负责策略、风控、文档和最终集成。
+- subagent 负责最小 A 股回测规则增强，仅修改 `backend/app/backtest/engine.py` 和相关回测测试。
+
+下一步：
+
+- 集成回测调仓日、信号延迟、T+1、涨跌停和停牌规则。
+- 将风控引擎接入回测执行前的目标仓位处理。
+- 完整验证动量策略多股票组合回测。
+
+## 2026-06-17 风控接入回测
+
+本轮完成：
+
+- `BacktestConfig` 增加独立风控参数：
+  - `risk_max_symbol_weight`
+  - `risk_max_total_weight`
+  - `risk_max_positions`
+- `/api/backtests/run` 支持传入风控参数。
+- 回测引擎在策略生成目标仓位后调用 `RiskEngine.evaluate()`，再将裁剪后的目标仓位交给撮合逻辑。
+- 前端回测页增加风控单票、风控总仓、最大持仓数输入。
+- 新增测试覆盖：策略返回三只超配股票时，风控会限制持仓数量、单票仓位和组合总仓位。
+
+验证：
+
+- `D:\anaconda3\python.exe -m pytest tests` 通过，16 个测试全部通过。
+- `npm run build` 通过。
+## 2026-06-18 Phase 1 closeout
+
+Completed:
+- Added benchmark support to new backtest runs through `benchmark_symbol`, `benchmark_curve`, `benchmark_return`, and `excess_return`.
+- Updated the equity chart to show strategy equity, benchmark equity, and drawdown.
+- Added regression coverage for benchmark/excess return metrics.
+- Added `docs/phase1-handoff.md` for agent handoff.
+
+Validation:
+- `D:\anaconda3\python.exe -m pytest tests`: 17 passed, with non-blocking `.pytest_cache` permission warnings.
+- `npm run build`: passed, with the existing Vite large chunk warning.
+
+## 2026-06-19 赚钱优先路线与消息面规划
+
+本轮新增后续主交接文档：
+
+- `docs/profit-first-roadmap-with-sentiment.md`
+
+文档明确后续重点：
+
+- 先扩充研究池和交易日历，保证策略验证可信。
+- 增加低波红利、小盘动量、ETF 轮动等赚钱导向策略池。
+- 新增消息面/市场情绪引擎，把新闻、公告、股吧、研报等数据结构化为可回测因子。
+- 规划 `NewsProvider`、`SentimentAnalyzer`、`SentimentFactorEngine` 三层接口。
+- 后续三 Agent 协作时以该文档为主线，Codex 负责接口/测试/集成，GLM 负责数据和因子，DeepSeek 负责策略和情绪策略优化。
+
+## 2026-06-20 因子实验室与 AI 研究闭环
+
+三方协作：
+
+- OpenCode GLM 5.2：实现 OHLCV 因子实验室。
+- Claude Code DeepSeek V4 Pro：实现波动收缩突破和趋势过滤反转策略。
+- Codex：完成指数隔离、共享接口、API、互审修复、真实实验和最终集成。
+
+完成：
+
+- 新增独立指数日线表，避免指数覆盖同代码股票。
+- 新增 21 个 OHLCV 因子及 IC/RankIC/分组收益/换手率评估。
+- 新增因子实验 API。
+- 新增两个高级 OHLCV 策略。
+- 新增受控 AI 因子候选协议和 Qlib 格式适配器。
+- GLM、DeepSeek 分别提出候选组合，并由统一接口完成评估。
+
+详细交接：
+
+- `docs/factor-lab-and-ai-research-handoff.md`
+
+## 2026-06-20 全 A 股与市场状态判断
+
+完成：
+
+- 交易日历表与真实日历同步。
+- SH/SZ/BJ 全市场分块同步。
+- 北交所 `920xxx` 代码识别。
+- 跨请求持久化失败熔断。
+- 全市场数据质量报告。
+- 可恢复后台同步器。
+- 市场状态分析与受控 LLM 上下文。
+- 数据中心全市场同步面板。
+
+验证：
+
+- 330 个后端测试通过。
+- 前端构建通过。
+- 交易日历真实同步 8,797 天。
+- 当前股票列表 5,515 只。
+- 真实首批 20 只全市场同步全部成功。
+
+详细交接：
+
+- `docs/full-market-data-and-llm-regime-handoff.md`

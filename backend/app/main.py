@@ -1,7 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import backtest, data, health, strategies
+from app.api.routes import (
+    ai_research,
+    backtest,
+    data,
+    factors,
+    health,
+    pit,
+    strategies,
+)
 from app.core.database import init_db
 
 
@@ -20,6 +28,9 @@ def create_app() -> FastAPI:
     app.include_router(data.router, prefix="/api/data", tags=["data"])
     app.include_router(strategies.router, prefix="/api/strategies", tags=["strategies"])
     app.include_router(backtest.router, prefix="/api/backtests", tags=["backtests"])
+    app.include_router(factors.router, prefix="/api/factors", tags=["factors"])
+    app.include_router(ai_research.router, prefix="/api/ai-research", tags=["ai-research"])
+    app.include_router(pit.router, prefix="/api/data/pit", tags=["pit"])
 
     @app.on_event("startup")
     def on_startup() -> None:
@@ -29,4 +40,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

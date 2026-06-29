@@ -6,5 +6,4 @@ placeholder for later user-loaded strategies with the same target-weight style.
 
 from app.strategy.examples import MovingAverageStrategy
 
-Strategy = MovingAverageStrategy
-
+STRATEGY_CLASS = MovingAverageStrategy

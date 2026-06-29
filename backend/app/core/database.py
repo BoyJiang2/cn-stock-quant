@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import DATA_DIR, settings
-from app.models.entities import Base
+from app.models import Base  # noqa: F401  (imports entities + pit tables)
 
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)

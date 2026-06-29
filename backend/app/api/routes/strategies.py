@@ -6,6 +6,5 @@ router = APIRouter()
 
 
 @router.get("")
-def strategies() -> list[dict[str, str]]:
+def strategies() -> list[dict]:
     return list_strategies()
-
