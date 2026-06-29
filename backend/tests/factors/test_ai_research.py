@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.ai_research import build_composite_factor, to_qlib_frame
+from app.ai_research import build_composite_factor, predictions_to_weights, to_qlib_frame
 from app.core.database import get_session
 from app.main import create_app
 from app.models.entities import Base, DailyBar, IndexDailyBar, Stock
@@ -52,6 +52,46 @@ def test_qlib_adapter_uses_datetime_and_instrument_columns():
     assert list(frame.columns[:2]) == ["datetime", "instrument"]
     assert pd.api.types.is_datetime64_any_dtype(frame["datetime"])
     assert frame["instrument"].iloc[0] == "000001"
+
+
+def test_predictions_to_weights_converts_model_scores_to_strategy_contract():
+    predictions = pd.DataFrame(
+        {
+            "datetime": pd.to_datetime(
+                ["2024-01-02", "2024-01-02", "2024-01-02", "2024-01-01"]
+            ),
+            "instrument": ["000001", "000002", "000003", "000004"],
+            "score": [0.9, -0.2, 0.3, 10.0],
+        }
+    )
+
+    weights = predictions_to_weights(
+        predictions,
+        as_of_date=date(2024, 1, 2),
+        top_n=2,
+        gross_exposure=0.8,
+        max_position_weight=0.5,
+    )
+
+    assert set(weights) == {"000001", "000003"}
+    assert 0 < sum(weights.values()) <= 0.8
+    assert max(weights.values()) <= 0.5
+    assert weights["000001"] >= weights["000003"]
+
+
+def test_predictions_to_weights_accepts_project_column_names_and_empty_days():
+    predictions = pd.DataFrame(
+        {
+            "trade_date": [date(2024, 1, 2)],
+            "symbol": ["000001"],
+            "score": [1.0],
+        }
+    )
+
+    assert predictions_to_weights(predictions, as_of_date=date(2024, 1, 3)) == {}
+    assert predictions_to_weights(predictions, as_of_date=date(2024, 1, 2)) == {
+        "000001": 0.1
+    }
 
 
 def test_ai_research_capabilities_disallow_arbitrary_code():

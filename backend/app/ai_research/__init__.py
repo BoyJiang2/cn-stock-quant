@@ -10,10 +10,11 @@ from app.ai_research.market_regime import (
     RegimeResult,
     build_llm_market_context,
 )
-from app.ai_research.qlib_adapter import to_qlib_frame
+from app.ai_research.qlib_adapter import predictions_to_weights, to_qlib_frame
 
 __all__ = [
     "build_composite_factor",
+    "predictions_to_weights",
     "to_qlib_frame",
     "MarketRegimeAnalyzer",
     "RegimeResult",

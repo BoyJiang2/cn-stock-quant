@@ -72,8 +72,18 @@ python sync_full_market.py `
   --start-date 2024-01-02 `
   --end-date 2025-12-31 `
   --batch-size 20 `
-  --interval 0.35
+  --interval 0.35 `
+  --state-file full-market-sync.state.json
 ```
+
+运行器每批输出一行 JSON，包含 `exit_reason`、`progress` 和本批 `items`。`items` 会列出失败或熔断证券的 `symbol/status/message`，便于只看日志就能定位卡点。`exit_reason` 取值：
+
+- `continue`：本批有推进，继续下一批。
+- `completed`：进度已完成，进程返回 0。
+- `blocked`：剩余候选都被熔断，进程返回 2，需要检查 `items` 或使用 `--retry-failed` 显式重试。
+- `idle`：未处理任何证券但进度未完成，进程返回 2，需要检查股票池/日期范围/同步任务记录。
+
+`--state-file` 会在每批后写入 heartbeat JSON，包含进程号、更新时间、进度、退出原因和最后一批证券明细；适合长时间全市场同步中断后确认续跑位置。
 
 当前后台任务已经启动。
 

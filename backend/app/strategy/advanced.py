@@ -1,6 +1,6 @@
-"""Advanced OHLCV strategies — Module C.
+﻿"""Advanced OHLCV strategies — Module C.
 
-Two strategy implementations:
+Three strategy implementations:
 
 1. **VolatilityContractionBreakoutStrategy** — VCP-style breakout detection with
    long-term trend filter, multi-window high breakout, ATR contraction, and volume
@@ -9,6 +9,12 @@ Two strategy implementations:
 2. **TrendFilteredMeanReversionStrategy** — Trend-filtered mean reversion that
    only buys oversold dips in confirmed uptrends (MA120 filter), using 5-day
    drawdown, RSI oversold, and z-score deviation signals. Liquidity-gated.
+
+3. **RiskAdjustedMomentumStrategy** — Risk-adjusted momentum rotation that
+   ranks liquid, uptrending names by trailing Sharpe (mean / std of daily
+   returns) and equal-weights the top_n.  Tilt toward *steady* winners makes
+   it more robust to A-share T+1 settlement and round-trip costs than raw
+   momentum.
 """
 
 from typing import Any
@@ -615,10 +621,186 @@ class TrendFilteredMeanReversionStrategy(Strategy):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Strategy 3: Risk-Adjusted Momentum Rotation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class RiskAdjustedMomentumStrategy(Strategy):
+    """Long-only rotation ranked by trailing risk-adjusted momentum."""
+
+    name = "risk_adjusted_momentum"
+    display_name = "Risk-Adjusted Momentum"
+    description = (
+        "Ranks liquid uptrending names by trailing Sharpe ratio and "
+        "equal-weights the top candidates under single-name and total "
+        "exposure caps."
+    )
+    parameters: list[StrategyParameter] = [
+        StrategyParameter(
+            "trend_window",
+            "Trend MA window",
+            "int",
+            60,
+            min=2,
+            step=1,
+            description="Only consider names whose close is above this moving average.",
+        ),
+        StrategyParameter(
+            "sharpe_window",
+            "Sharpe window",
+            "int",
+            20,
+            min=2,
+            step=1,
+            description="Trailing daily-return mean/std window.",
+        ),
+        StrategyParameter(
+            "min_sharpe",
+            "Minimum Sharpe",
+            "float",
+            0.0,
+            step=0.1,
+            description="Minimum trailing Sharpe ratio for a candidate.",
+        ),
+        StrategyParameter(
+            "min_avg_amount_20d",
+            "20D amount floor",
+            "float",
+            50_000_000,
+            min=0.0,
+            step=1_000_000,
+            description="Minimum 20-day average traded amount.",
+        ),
+        StrategyParameter(
+            "min_price",
+            "Minimum price",
+            "float",
+            5.0,
+            min=0.0,
+            step=0.1,
+            description="Skip names below this close price.",
+        ),
+        StrategyParameter("top_n", "Position count", "int", 10, min=1, step=1),
+        StrategyParameter(
+            "max_position_weight",
+            "Single-name cap",
+            "float",
+            0.15,
+            min=0.0,
+            max=1.0,
+            step=0.01,
+        ),
+        StrategyParameter(
+            "max_total_weight",
+            "Gross exposure",
+            "float",
+            0.95,
+            min=0.0,
+            max=1.0,
+            step=0.05,
+        ),
+    ]
+
+    @staticmethod
+    def _compute_sharpe(closes: pd.Series, window: int) -> float:
+        returns = closes.pct_change(fill_method=None)
+        mean = returns.rolling(window, min_periods=window).mean()
+        std = returns.rolling(window, min_periods=window).std()
+        sharpe = mean / std.replace(0.0, float("nan"))
+        return float(sharpe.iloc[-1])
+
+    def generate_target_weights(
+        self, context: StrategyContext, history: pd.DataFrame,
+    ) -> dict[str, float]:
+        if history.empty:
+            return {}
+
+        trend_window = int(context.params.get("trend_window", 60))
+        sharpe_window = int(context.params.get("sharpe_window", 20))
+        min_sharpe = float(context.params.get("min_sharpe", 0.0))
+        min_avg_amount_20d = float(context.params.get("min_avg_amount_20d", 50_000_000))
+        min_price = float(context.params.get("min_price", 5.0))
+        top_n = int(context.params.get("top_n", 10))
+        max_position_weight = float(context.params.get("max_position_weight", 0.15))
+        max_total_weight = float(context.params.get("max_total_weight", 0.95))
+
+        if trend_window <= 1:
+            raise ValueError(f"trend_window must be > 1, got {trend_window}")
+        if sharpe_window <= 1:
+            raise ValueError(f"sharpe_window must be > 1, got {sharpe_window}")
+        if top_n < 1:
+            raise ValueError(f"top_n must be >= 1, got {top_n}")
+        if any(
+            pd.isna(value)
+            for value in [
+                min_sharpe,
+                min_avg_amount_20d,
+                min_price,
+                max_position_weight,
+                max_total_weight,
+            ]
+        ):
+            raise ValueError("Parameters contain NaN values")
+        for name, value in [
+            ("max_position_weight", max_position_weight),
+            ("max_total_weight", max_total_weight),
+        ]:
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        for name, value in [
+            ("min_price", min_price),
+            ("min_avg_amount_20d", min_avg_amount_20d),
+        ]:
+            if value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+
+        all_symbols = list(history["symbol"].unique())
+        min_data_len = max(trend_window, sharpe_window) + 1
+        candidates: list[dict[str, object]] = []
+
+        for symbol, group in history.groupby("symbol"):
+            ordered = group.sort_values("trade_date")
+            closes = ordered["close"].astype(float)
+            if len(closes) < min_data_len:
+                continue
+
+            trend_ma = float(closes.tail(trend_window).mean())
+            latest_close = float(closes.iloc[-1])
+            if pd.isna(trend_ma) or latest_close <= trend_ma:
+                continue
+
+            sharpe = self._compute_sharpe(closes, sharpe_window)
+            if pd.isna(sharpe) or sharpe < min_sharpe:
+                continue
+
+            if min_avg_amount_20d > 0:
+                if "amount" not in ordered.columns:
+                    continue
+                avg_amount_20d = float(ordered["amount"].tail(20).mean())
+                if pd.isna(avg_amount_20d) or avg_amount_20d < min_avg_amount_20d:
+                    continue
+
+            if pd.isna(latest_close) or latest_close < min_price:
+                continue
+
+            candidates.append({"symbol": symbol, "sharpe": sharpe})
+
+        if not candidates:
+            return {symbol: 0.0 for symbol in all_symbols}
+
+        candidates.sort(key=lambda item: float(item["sharpe"]), reverse=True)
+        selected = candidates[:top_n]
+        weight = min(max_position_weight, max_total_weight / len(selected))
+        selected_weights = {str(item["symbol"]): weight for item in selected}
+        return {symbol: selected_weights.get(symbol, 0.0) for symbol in all_symbols}
+
+
 # Module-level registry helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
 ADVANCED_STRATEGIES: dict[str, type[Strategy]] = {
     VolatilityContractionBreakoutStrategy.name: VolatilityContractionBreakoutStrategy,
     TrendFilteredMeanReversionStrategy.name: TrendFilteredMeanReversionStrategy,
+    RiskAdjustedMomentumStrategy.name: RiskAdjustedMomentumStrategy,
 }
+

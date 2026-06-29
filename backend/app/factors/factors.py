@@ -195,6 +195,69 @@ def _up_day_ratio(inputs: FactorInputs, window: int) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Risk-adjusted / return-distribution family
+# ---------------------------------------------------------------------------
+#
+# These factors summarise the *shape* of the trailing return distribution.
+# They are deliberately complementary to the momentum / volatility families:
+#
+# * ``sharpe_20d``      -- mean / std of daily returns (risk-adjusted
+#   momentum).  A classic long-only ranking signal: high Sharpe = steady
+#   winner, low / negative Sharpe = either losing or choppy.
+# * ``return_skew_20d`` -- sample skewness of daily returns.  Negative skew
+#   indicates tail-risk (occasional large drops); positive skew is
+#   preferable for a long-only holder.
+# * ``vwap_gap_20d``    -- close vs the rolling volume-weighted average
+#   price over ``window``.  ``vwap = sum(amount) / sum(volume)`` is the
+#   standard rolling VWAP.  Closing persistently above VWAP indicates
+#   sustained buying pressure (institutional absorption).
+#
+# All three are column-wise rolling computations on the wide frames, so the
+# cross-stock isolation and no-look-ahead guarantees of the rest of the
+# module carry over unchanged.
+
+def _sharpe(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Rolling mean / std of daily simple returns (annualisation-agnostic).
+
+    The ratio is invariant to any constant scaling of returns, so the
+    ranking it produces is identical to a properly annualised Sharpe -- only
+    the absolute level differs.  Zero-dispersion windows yield ``NaN`` so
+    they are dropped downstream rather than treated as infinite Sharpe.
+    """
+    ret = _simple_returns(inputs.close)
+    mean = ret.rolling(window).mean()
+    std = ret.rolling(window).std()  # ddof=1, matching the codebase default
+    return mean / std.replace(0.0, np.nan)
+
+
+def _return_skew(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Rolling sample skewness of daily simple returns.
+
+    Uses pandas' bias-corrected Fisher-Pearson skewness
+    (``G1 = sqrt(n*(n-1))/(n-2) * g1``).  Negative values mark distributions
+    with a fatter left tail -- the regime a long-only A-share holder wants
+    to avoid.
+    """
+    ret = _simple_returns(inputs.close)
+    return ret.rolling(window).skew()
+
+
+def _vwap_gap(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Gap between close and the rolling volume-weighted average price.
+
+    ``vwap = sum(amount) / sum(volume)`` over the trailing ``window``;
+    the factor is ``(close - vwap) / vwap``.  Amount is in yuan and volume
+    in shares, so ``amount / volume`` is the per-share average price.
+    Windows with zero total volume yield ``NaN``.
+    """
+    vwap = (
+        inputs.amount.rolling(window).sum()
+        / inputs.volume.rolling(window).sum().replace(0.0, np.nan)
+    )
+    return (inputs.close - vwap) / vwap.replace(0.0, np.nan)
+
+
+# ---------------------------------------------------------------------------
 # Default registry
 # ---------------------------------------------------------------------------
 
@@ -235,6 +298,11 @@ def default_registry() -> FactorRegistry:
     reg.register("price_volume_corr_20d", lambda inp, p: _price_volume_corr(inp, 20))
     reg.register("up_day_ratio_20d", lambda inp, p: _up_day_ratio(inp, 20))
 
+    # Risk-adjusted / return-distribution
+    reg.register("sharpe_20d", lambda inp, p: _sharpe(inp, 20))
+    reg.register("return_skew_20d", lambda inp, p: _return_skew(inp, 20))
+    reg.register("vwap_gap_20d", lambda inp, p: _vwap_gap(inp, 20))
+
     return reg
 
 
@@ -260,6 +328,9 @@ BUILTIN_FACTOR_NAMES: list[str] = [
     "amihud_illiquidity_20d",
     "price_volume_corr_20d",
     "up_day_ratio_20d",
+    "sharpe_20d",
+    "return_skew_20d",
+    "vwap_gap_20d",
 ]
 
 # Direction used to orient evaluation so a higher adjusted value always means
@@ -286,4 +357,8 @@ FACTOR_DIRECTIONS: dict[str, int] = {
     "amihud_illiquidity_20d": -1,
     "price_volume_corr_20d": 1,
     "up_day_ratio_20d": 1,
+    # Risk-adjusted / return-distribution
+    "sharpe_20d": 1,        # higher Sharpe = better risk-adjusted momentum
+    "return_skew_20d": 1,   # positive skew preferable for long-only holders
+    "vwap_gap_20d": 1,      # closing above VWAP = buying pressure
 }
