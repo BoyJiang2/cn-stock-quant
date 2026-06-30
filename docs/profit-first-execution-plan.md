@@ -98,6 +98,23 @@ Do not promote a strategy toward paper/live trading unless it passes all gates:
   - `IM_60d_top50`: `total_return=0.185018`, `excess_return=-0.026883`, `max_drawdown=-0.086038`, `sharpe=1.372861`, turnover `20.319901`.
   - `IM_20d_strict`: `total_return=0.116793`, `excess_return=-0.095108`, `max_drawdown=-0.175942`, `sharpe=0.684917`, turnover `29.669327`.
   - `IM_20d_top30`: `total_return=0.112428`, `excess_return=-0.099473`, `max_drawdown=-0.185211`, `sharpe=0.651254`, turnover `28.970167`.
+- 2026-06-30: `IM_60d_top30` 2024 OOS validation passed:
+  - Default costs: `total_return=0.21141`, `benchmark_return=0.161991`, `excess_return=0.049419`, `max_drawdown=-0.182329`, `sharpe=0.914687`, turnover `17.874486`.
+  - Zero costs: `total_return=0.233385`, `benchmark_return=0.161991`, `excess_return=0.071394`, `max_drawdown=-0.171926`, `sharpe=0.990564`, turnover `18.006957`.
+- 2026-06-30: `IM_60d_top30` cost stress matrix:
+
+| Year | Cost case | Commission | Slippage | Total return | Benchmark | Excess | Max drawdown | Sharpe | Turnover |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2025 | zero | 0 | 0 | 0.248017 | 0.211901 | 0.036116 | -0.090952 | 1.617692 | 23.088173 |
+| 2025 | ideal | 0.0001 | 0.0003 | 0.223670 | 0.211901 | 0.011769 | -0.097440 | 1.481739 | 22.808936 |
+| 2025 | default | 0.0003 | 0.0005 | 0.216990 | 0.211901 | 0.005089 | -0.099372 | 1.441734 | 22.723315 |
+| 2025 | retail | 0.0005 | 0.0010 | 0.200837 | 0.211901 | -0.011064 | -0.103855 | 1.344706 | 22.568798 |
+| 2025 | stress | 0.0005 | 0.0020 | 0.178434 | 0.211901 | -0.033467 | -0.110253 | 1.208521 | 22.415773 |
+| 2024 | zero | 0 | 0 | 0.233385 | 0.161991 | 0.071394 | -0.171926 | 0.990564 | 18.006957 |
+| 2024 | ideal | 0.0001 | 0.0003 | 0.216489 | 0.161991 | 0.054498 | -0.179979 | 0.932726 | 17.913608 |
+| 2024 | default | 0.0003 | 0.0005 | 0.211410 | 0.161991 | 0.049419 | -0.182329 | 0.914687 | 17.874486 |
+| 2024 | retail | 0.0005 | 0.0010 | 0.192560 | 0.161991 | 0.030568 | -0.187858 | 0.852389 | 17.733874 |
+| 2024 | stress | 0.0005 | 0.0020 | 0.170400 | 0.161991 | 0.008409 | -0.195494 | 0.777426 | 17.544484 |
 
 ## Current P0 Read
 
@@ -108,3 +125,5 @@ Do not promote a strategy toward paper/live trading unless it passes all gates:
 - The first hysteresis/grid round improved drawdown and cut turnover by more than half, but did not restore benchmark outperformance. Treat `stable_reversal` as a defensive sleeve candidate, not the main profit engine.
 - Next profit search should shift toward inverse momentum, low-vol defensive, and LightGBM factor blending instead of overfitting this one rule.
 - `inverse_momentum` is now the strongest simple rule candidate: 60-day laggard selection produced the first default-cost positive excess result in 2025, while 20-day variants were weak. Next verify 2024 and run cost stress before promoting.
+- `IM_60d_top30` passed 2024 OOS and 2024 cost stress, but 2025 retail/stress costs turn excess negative. This is a viable research candidate, not yet a paper/live candidate. Next reduce execution drag or add a stronger alpha layer.
+- Promotion gate still incomplete: benchmark comparison is only against `000300`; must compare against `000905` and `000852`, and PIT universe limitations remain unresolved.
