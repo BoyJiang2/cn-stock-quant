@@ -86,6 +86,180 @@ class MomentumRankStrategy(Strategy):
         }
 
 
+class InverseMomentumStrategy(Strategy):
+    name = "inverse_momentum"
+    display_name = "Inverse Momentum"
+    description = (
+        "Ranks liquid stocks by weak trailing momentum and holds the most "
+        "oversold names with position and total exposure caps."
+    )
+    parameters = [
+        StrategyParameter("lookback_window", "Lookback window", "int", 60, min=5, step=1),
+        StrategyParameter("skip_recent_days", "Skip recent days", "int", 5, min=0, step=1),
+        StrategyParameter("top_n", "Position count", "int", 30, min=1, step=1),
+        StrategyParameter("max_position_weight", "Single-name cap", "float", 0.05, min=0.0, max=1.0, step=0.01),
+        StrategyParameter("max_total_weight", "Total exposure", "float", 0.8, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("min_avg_amount_20d", "20d amount floor", "float", 50_000_000, min=0.0, step=1_000_000),
+        StrategyParameter("min_price", "Minimum price", "float", 5.0, min=0.0, step=0.1),
+        StrategyParameter("max_momentum", "Maximum momentum", "float", 0.0, step=0.01),
+        StrategyParameter("max_drawdown", "Maximum drawdown", "float", 0.5, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("amount_ratio_short_window", "Short amount window", "int", 5, min=1, step=1),
+        StrategyParameter("amount_ratio_long_window", "Long amount window", "int", 20, min=2, step=1),
+        StrategyParameter("max_amount_ratio", "Crowding ratio cap", "float", 2.5, min=0.0, step=0.1),
+        StrategyParameter("hold_rank_multiplier", "Hold rank buffer", "float", 1.0, min=1.0, step=0.1),
+        StrategyParameter("benchmark_window", "Benchmark momentum window", "int", 20, min=2, step=1),
+        StrategyParameter("max_benchmark_momentum", "Benchmark momentum cap", "float", 1.0, step=0.01),
+    ]
+
+    def generate_target_weights(self, context: StrategyContext, history: pd.DataFrame) -> dict[str, float]:
+        if history.empty:
+            return {}
+
+        lookback_window = int(context.params.get("lookback_window", 60))
+        skip_recent_days = max(0, int(context.params.get("skip_recent_days", 5)))
+        top_n = max(1, int(context.params.get("top_n", 30)))
+        max_position_weight = float(context.params.get("max_position_weight", 0.05))
+        max_total_weight = float(context.params.get("max_total_weight", 0.8))
+        min_avg_amount_20d = float(context.params.get("min_avg_amount_20d", 50_000_000))
+        min_price = float(context.params.get("min_price", 5.0))
+        max_momentum = float(context.params.get("max_momentum", 0.0))
+        max_drawdown = float(context.params.get("max_drawdown", 0.5))
+        amount_short_window = int(context.params.get("amount_ratio_short_window", 5))
+        amount_long_window = int(context.params.get("amount_ratio_long_window", 20))
+        max_amount_ratio = float(context.params.get("max_amount_ratio", 2.5))
+        hold_rank_multiplier = float(context.params.get("hold_rank_multiplier", 1.0))
+        benchmark_window = int(context.params.get("benchmark_window", 20))
+        max_benchmark_momentum = float(context.params.get("max_benchmark_momentum", 1.0))
+
+        for name, value in [
+            ("lookback_window", lookback_window),
+            ("amount_ratio_short_window", amount_short_window),
+            ("amount_ratio_long_window", amount_long_window),
+            ("benchmark_window", benchmark_window),
+        ]:
+            minimum = 0 if name == "amount_ratio_short_window" else 1
+            if value <= minimum:
+                raise ValueError(f"{name} must be > {minimum}, got {value}")
+        for name, value in [
+            ("max_position_weight", max_position_weight),
+            ("max_total_weight", max_total_weight),
+            ("max_drawdown", max_drawdown),
+        ]:
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        for name, value in [
+            ("min_avg_amount_20d", min_avg_amount_20d),
+            ("min_price", min_price),
+            ("max_amount_ratio", max_amount_ratio),
+            ("hold_rank_multiplier", hold_rank_multiplier),
+        ]:
+            if value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        if hold_rank_multiplier < 1.0:
+            raise ValueError(f"hold_rank_multiplier must be >= 1, got {hold_rank_multiplier}")
+
+        all_symbols = list(history["symbol"].unique())
+        if self._benchmark_momentum(context, benchmark_window) > max_benchmark_momentum:
+            return {symbol: 0.0 for symbol in all_symbols}
+
+        min_len = max(
+            lookback_window + skip_recent_days + 1,
+            amount_short_window,
+            amount_long_window,
+            20 if min_avg_amount_20d > 0.0 else 0,
+        )
+        candidates: list[tuple[str, float]] = []
+        for symbol, group in history.groupby("symbol"):
+            ordered = group.sort_values("trade_date")
+            if len(ordered) < min_len:
+                continue
+
+            closes = ordered["close"].astype(float)
+            latest_close = float(closes.iloc[-1])
+            if latest_close < min_price:
+                continue
+
+            if min_avg_amount_20d > 0.0:
+                if "amount" not in ordered.columns:
+                    continue
+                amounts = ordered["amount"].astype(float)
+                avg_amount_20d = float(amounts.tail(20).mean())
+                if avg_amount_20d < min_avg_amount_20d:
+                    continue
+            elif "amount" in ordered.columns:
+                amounts = ordered["amount"].astype(float)
+            else:
+                amounts = None
+
+            if amounts is not None:
+                long_amount = float(amounts.tail(amount_long_window).mean())
+                if long_amount <= 0.0:
+                    continue
+                amount_ratio = float(amounts.tail(amount_short_window).mean()) / long_amount
+                if max_amount_ratio > 0.0 and amount_ratio > max_amount_ratio:
+                    continue
+
+            signal_price = closes.iloc[-skip_recent_days - 1] if skip_recent_days else closes.iloc[-1]
+            base_price = closes.iloc[-lookback_window - skip_recent_days - 1]
+            if base_price <= 0.0 or signal_price <= 0.0:
+                continue
+            momentum = float(signal_price / base_price - 1.0)
+            if momentum > max_momentum:
+                continue
+
+            lookback_closes = closes.tail(lookback_window)
+            peak = lookback_closes.expanding().max()
+            worst_drawdown = abs(float(((lookback_closes - peak) / peak).min()))
+            if worst_drawdown > max_drawdown:
+                continue
+
+            candidates.append((str(symbol), momentum))
+
+        ranked = sorted(candidates, key=lambda item: item[1])
+        if not ranked:
+            return {symbol: 0.0 for symbol in all_symbols}
+
+        rank_by_symbol = {symbol: rank for rank, (symbol, _) in enumerate(ranked, start=1)}
+        hold_cutoff = max(top_n, int(top_n * hold_rank_multiplier))
+        retained_symbols = {
+            symbol
+            for symbol, quantity in context.positions.items()
+            if quantity > 0 and rank_by_symbol.get(symbol, hold_cutoff + 1) <= hold_cutoff
+        }
+        selected_symbols = [
+            symbol
+            for symbol, _ in ranked
+            if symbol in retained_symbols
+        ][:top_n]
+        for symbol, _ in ranked:
+            if len(selected_symbols) >= top_n:
+                break
+            if symbol in selected_symbols:
+                continue
+            selected_symbols.append(symbol)
+
+        weight = min(max_position_weight, max_total_weight / len(selected_symbols))
+        selected_symbol_set = set(selected_symbols)
+        return {
+            symbol: (weight if symbol in selected_symbol_set else 0.0)
+            for symbol in all_symbols
+        }
+
+    @staticmethod
+    def _benchmark_momentum(context: StrategyContext, window: int) -> float:
+        benchmark = context.benchmark_history
+        if benchmark is None or benchmark.empty:
+            return 0.0
+        closes = benchmark.sort_values("trade_date")["close"].astype(float)
+        if len(closes) <= window:
+            return 0.0
+        base = float(closes.iloc[-window - 1])
+        latest = float(closes.iloc[-1])
+        if base <= 0.0:
+            return 0.0
+        return latest / base - 1.0
+
+
 class MeanReversionStrategy(Strategy):
     name = "mean_reversion"
     display_name = "均值回归策略"
@@ -697,6 +871,7 @@ class StableReversalStrategy(Strategy):
 BUILTIN_STRATEGIES: dict[str, type[Strategy]] = {
     MovingAverageStrategy.name: MovingAverageStrategy,
     MomentumRankStrategy.name: MomentumRankStrategy,
+    InverseMomentumStrategy.name: InverseMomentumStrategy,
     MeanReversionStrategy.name: MeanReversionStrategy,
     LowVolDefensiveStrategy.name: LowVolDefensiveStrategy,
     StableReversalStrategy.name: StableReversalStrategy,

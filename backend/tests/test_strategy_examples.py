@@ -3,7 +3,12 @@ from datetime import date, timedelta
 import pandas as pd
 
 from app.strategy.base import StrategyContext
-from app.strategy.examples import BUILTIN_STRATEGIES, MomentumRankStrategy, StableReversalStrategy
+from app.strategy.examples import (
+    BUILTIN_STRATEGIES,
+    InverseMomentumStrategy,
+    MomentumRankStrategy,
+    StableReversalStrategy,
+)
 
 
 def test_momentum_rank_skips_recent_days_and_caps_position_weight():
@@ -90,6 +95,160 @@ def test_momentum_rank_filters_low_liquidity_symbols():
 
     assert weights["000001"] == 0.5
     assert weights["600000"] == 0.0
+
+
+def test_inverse_momentum_selects_weak_liquid_symbols():
+    start = date(2024, 1, 1)
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "trade_date": start + timedelta(days=i),
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 100_000,
+                "amount": amount,
+            }
+            for i in range(25)
+            for symbol, price, amount in [
+                ("WEAKEST", 30 - i * 0.5, 100_000_000),
+                ("WEAK", 30 - i * 0.2, 100_000_000),
+                ("STRONG", 10 + i, 100_000_000),
+                ("ILLIQUID", 20 - i, 1_000_000),
+            ]
+        ]
+    )
+
+    weights = InverseMomentumStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=start + timedelta(days=9),
+            cash=100_000,
+            params={
+                "lookback_window": 5,
+                "skip_recent_days": 0,
+                "top_n": 2,
+                "max_position_weight": 0.3,
+                "max_total_weight": 0.4,
+                "min_avg_amount_20d": 50_000_000,
+                "min_price": 1,
+                "max_momentum": 0.0,
+                "max_drawdown": 0.5,
+            },
+        ),
+        bars,
+    )
+
+    assert weights["WEAKEST"] == 0.2
+    assert weights["WEAK"] == 0.2
+    assert weights["STRONG"] == 0.0
+    assert weights["ILLIQUID"] == 0.0
+
+
+def test_inverse_momentum_benchmark_gate_can_disable_entries():
+    start = date(2024, 1, 1)
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": "WEAK",
+                "trade_date": start + timedelta(days=i),
+                "open": 20 - i * 0.2,
+                "high": 20 - i * 0.2,
+                "low": 20 - i * 0.2,
+                "close": 20 - i * 0.2,
+                "volume": 100_000,
+                "amount": 100_000_000,
+            }
+            for i in range(10)
+        ]
+    )
+    benchmark = pd.DataFrame(
+        [
+            {
+                "symbol": "000300",
+                "trade_date": start + timedelta(days=i),
+                "open": 100 + i * 2,
+                "high": 100 + i * 2,
+                "low": 100 + i * 2,
+                "close": 100 + i * 2,
+                "volume": 100_000,
+                "amount": 100_000_000,
+            }
+            for i in range(10)
+        ]
+    )
+
+    weights = InverseMomentumStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=start + timedelta(days=9),
+            cash=100_000,
+            benchmark_history=benchmark,
+            params={
+                "lookback_window": 5,
+                "skip_recent_days": 0,
+                "top_n": 1,
+                "max_position_weight": 0.3,
+                "max_total_weight": 0.3,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+                "max_benchmark_momentum": 0.01,
+            },
+        ),
+        bars,
+    )
+
+    assert weights == {"WEAK": 0.0}
+
+
+def test_inverse_momentum_filters_crowded_amount_spikes_and_holds_buffered_position():
+    start = date(2024, 1, 1)
+    rows = []
+    for i in range(12):
+        for symbol, close, amount in [
+            ("WEAKEST", 20 - i * 0.6, 100_000_000 + (i % 2) * 1_000_000),
+            ("HELD", 20 - i * 0.4, 100_000_000 + (i % 3) * 1_000_000),
+            ("SPIKE", 20 - i * 0.8, 100_000_000 if i < 8 else 500_000_000),
+        ]:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "trade_date": start + timedelta(days=i),
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                    "volume": 100_000,
+                    "amount": amount,
+                }
+            )
+    bars = pd.DataFrame(rows)
+
+    weights = InverseMomentumStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=start + timedelta(days=11),
+            cash=100_000,
+            positions={"HELD": 100},
+            params={
+                "lookback_window": 5,
+                "skip_recent_days": 0,
+                "top_n": 1,
+                "max_position_weight": 0.5,
+                "max_total_weight": 0.3,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+                "max_amount_ratio": 1.1,
+                "amount_ratio_short_window": 2,
+                "amount_ratio_long_window": 5,
+                "hold_rank_multiplier": 2.0,
+            },
+        ),
+        bars,
+    )
+
+    assert weights["WEAKEST"] == 0.0
+    assert weights["HELD"] == 0.3
+    assert weights["SPIKE"] == 0.0
 
 
 def test_stable_reversal_selects_stable_oversold_liquid_symbols():
@@ -334,4 +493,18 @@ def test_stable_reversal_registered_as_builtin_strategy():
         "top_n",
         "max_total_weight",
         "hold_rank_multiplier",
+    }
+
+
+def test_inverse_momentum_registered_as_builtin_strategy():
+    assert BUILTIN_STRATEGIES["inverse_momentum"] is InverseMomentumStrategy
+    metadata = InverseMomentumStrategy.metadata()
+    assert metadata["name"] == "inverse_momentum"
+    assert {param["name"] for param in metadata["parameters"]} >= {
+        "lookback_window",
+        "max_momentum",
+        "max_benchmark_momentum",
+        "max_amount_ratio",
+        "hold_rank_multiplier",
+        "top_n",
     }

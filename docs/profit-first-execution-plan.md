@@ -29,7 +29,7 @@ round so future agents can continue without rediscovering context.
 | --- | --- | --- | --- | --- | --- | --- |
 | P2-1 | Enhance `stable_reversal` | Improve the current candidate | Low-vol weighting, crowding penalty, better defaults | Codex | pending | Use P0 grid results |
 | P2-2 | Low-vol defensive rerun | Defensive return source | Full-market `low_vol_defensive` report | GLM | pending | Compare in bear/sideways regimes |
-| P2-3 | Inverse momentum strategy | Exploit negative 2025 momentum IC | `inverse_momentum` strategy | GLM | pending | Must be regime-filtered |
+| P2-3 | Inverse momentum strategy | Exploit negative 2025 momentum IC | `inverse_momentum` strategy | GLM | in progress | First 60d variant is cost-adjusted excess positive in 2025 |
 | P2-4 | Market regime filter | Switch strategies by market state | `market_regime_filter` | DeepSeek | pending | Avoid one-strategy exposure |
 | P2-5 | Meta allocation | Allocate capital across strategies | Simple recent-performance allocator | Codex | pending | Not before P0 evidence |
 
@@ -90,6 +90,14 @@ Do not promote a strategy toward paper/live trading unless it passes all gates:
   - `G1_wide_low_turnover`: `total_return=0.110767`, `excess_return=-0.101134`, `max_drawdown=-0.114946`, `sharpe=0.809594`, turnover `33.958062`.
   - `G2_tight_reversal`: `total_return=0.102014`, `excess_return=-0.109887`, `max_drawdown=-0.140175`, `sharpe=0.648505`, turnover `35.192906`.
 - 2026-06-30: `G4_extreme_low_turnover` zero-cost run: `total_return=0.173592`, `benchmark_return=0.211901`, `excess_return=-0.038309`, `max_drawdown=-0.103647`, `sharpe=1.296044`, turnover `31.984806`.
+- 2026-06-30: Added builtin `inverse_momentum`, designed to exploit negative 2025 momentum IC by buying liquid laggards with drawdown, crowding, and optional benchmark-momentum gates.
+- 2026-06-30: Full-market 2025 `inverse_momentum`, default parameters, 10-day rebalance, default costs: `total_return=0.210259`, `benchmark_return=0.211901`, `excess_return=-0.001642`, `max_drawdown=-0.09678`, `sharpe=1.397148`, turnover `23.631958`.
+- 2026-06-30: Full-market 2025 `inverse_momentum`, default parameters, 10-day rebalance, zero costs: `total_return=0.239089`, `benchmark_return=0.211901`, `excess_return=0.027188`, `max_drawdown=-0.089612`, `sharpe=1.566754`, turnover `23.868972`.
+- 2026-06-30: Full-market 2025 inverse-momentum grid, 10-day rebalance, default costs:
+  - `IM_60d_top30`: `lookback_window=60`, `top_n=30`, `hold_rank_multiplier=1.2`, `total_return=0.21699`, `excess_return=0.005089`, `max_drawdown=-0.099372`, `sharpe=1.441734`, turnover `22.723315`.
+  - `IM_60d_top50`: `total_return=0.185018`, `excess_return=-0.026883`, `max_drawdown=-0.086038`, `sharpe=1.372861`, turnover `20.319901`.
+  - `IM_20d_strict`: `total_return=0.116793`, `excess_return=-0.095108`, `max_drawdown=-0.175942`, `sharpe=0.684917`, turnover `29.669327`.
+  - `IM_20d_top30`: `total_return=0.112428`, `excess_return=-0.099473`, `max_drawdown=-0.185211`, `sharpe=0.651254`, turnover `28.970167`.
 
 ## Current P0 Read
 
@@ -99,3 +107,4 @@ Do not promote a strategy toward paper/live trading unless it passes all gates:
 - Prioritize grid dimensions that reduce churn: higher `top_n`, higher `min_reversal`, stricter `max_amount_ratio`, longer rebalance interval with hysteresis, and a future hold-buffer rule.
 - The first hysteresis/grid round improved drawdown and cut turnover by more than half, but did not restore benchmark outperformance. Treat `stable_reversal` as a defensive sleeve candidate, not the main profit engine.
 - Next profit search should shift toward inverse momentum, low-vol defensive, and LightGBM factor blending instead of overfitting this one rule.
+- `inverse_momentum` is now the strongest simple rule candidate: 60-day laggard selection produced the first default-cost positive excess result in 2025, while 20-day variants were weak. Next verify 2024 and run cost stress before promoting.
