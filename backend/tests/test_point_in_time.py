@@ -44,6 +44,7 @@ from app.models.pit import (
     ResearchPoolMember,
     SecurityName,
     SecurityStatus,
+    SecurityTradeGap,
 )
 
 
@@ -1216,6 +1217,78 @@ def test_upsert_security_status_deduplicates_provider_batch(pit):
 
 
 # ---------------------------------------------------------------------------
+# Trade-gap audit rows
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_security_trade_gap_deduplicates_and_queries(pit, session):
+    rows = [
+        {
+            "symbol": "000001",
+            "trade_date": date(2024, 1, 2),
+            "expected_open": True,
+            "has_bar": False,
+            "gap_type": "provider_gap",
+            "source": "test",
+            "confidence": "high",
+        },
+        {
+            "symbol": "000001",
+            "trade_date": date(2024, 1, 2),
+            "expected_open": True,
+            "has_bar": True,
+            "gap_type": "normal",
+            "source": "test-resync",
+            "confidence": "medium",
+        },
+        {
+            "symbol": "000001",
+            "trade_date": date(2024, 1, 3),
+            "expected_open": True,
+            "has_bar": False,
+            "gap_type": "suspended",
+            "source": "test",
+            "confidence": "high",
+        },
+    ]
+
+    assert pit.upsert_security_trade_gap(rows) == 2
+
+    one_day = pit.trade_gap_as_of("000001", date(2024, 1, 2))
+    assert one_day is not None
+    assert one_day.gap_type == "normal"
+    assert one_day.has_bar is True
+    assert one_day.confidence == "medium"
+
+    gaps = pit.trade_gaps_between(
+        "000001", date(2024, 1, 1), date(2024, 1, 31)
+    )
+    assert [gap.trade_date for gap in gaps] == [
+        date(2024, 1, 2),
+        date(2024, 1, 3),
+    ]
+    assert [gap.gap_type for gap in gaps] == ["normal", "suspended"]
+    assert session.query(SecurityTradeGap).count() == 2
+
+
+def test_upsert_security_trade_gap_rejects_unknown_gap_type(pit):
+    with pytest.raises(ValueError, match="trade gap type"):
+        pit.upsert_security_trade_gap(
+            [
+                {
+                    "symbol": "000001",
+                    "trade_date": date(2024, 1, 2),
+                    "expected_open": True,
+                    "has_bar": False,
+                    "gap_type": "mystery",
+                    "source": "test",
+                    "confidence": "high",
+                }
+            ]
+        )
+
+
+# ---------------------------------------------------------------------------
 # Coverage report
 # ---------------------------------------------------------------------------
 
@@ -1237,7 +1310,37 @@ def test_pit_coverage_report_counts_rows(pit, session):
     report = pit.pit_coverage_report()
     assert report["security_status_rows"] == 1
     assert report["status_missing_announced_at"] == 1
+    assert report["security_trade_gap_rows"] == 0
     assert report["pit_ready"] is True
+
+
+def test_pit_coverage_report_counts_trade_gaps(pit):
+    pit.upsert_security_trade_gap(
+        [
+            {
+                "symbol": "000001",
+                "trade_date": date(2024, 1, 2),
+                "expected_open": True,
+                "has_bar": False,
+                "gap_type": "provider_gap",
+                "source": "test",
+                "confidence": "high",
+            },
+            {
+                "symbol": "000001",
+                "trade_date": date(2024, 1, 3),
+                "expected_open": True,
+                "has_bar": False,
+                "gap_type": "suspended",
+                "source": "test",
+                "confidence": "high",
+            },
+        ]
+    )
+
+    report = pit.pit_coverage_report()
+    assert report["security_trade_gap_rows"] == 2
+    assert report["provider_gap_rows"] == 1
 
 
 def test_pit_coverage_report_when_empty():

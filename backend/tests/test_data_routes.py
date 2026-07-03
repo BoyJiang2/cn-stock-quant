@@ -6,7 +6,7 @@ in-memory SQLite database injected via FastAPI's ``dependency_overrides``.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 
 import pandas as pd
@@ -266,6 +266,21 @@ def test_symbol_status_normalizes_prefixed_symbol():
     assert body["has_daily_bars"] is True
 
 
+def test_symbol_status_accepts_stock_name():
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "002156", "通富微电", "SZ")
+    _seed_bar(session_factory, "002156", date(2024, 1, 2))
+    client = _client_with(session_factory)
+
+    response = client.get("/api/data/symbol-status", params={"symbol": "通富微电"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["symbol"] == "002156"
+    assert body["name"] == "通富微电"
+    assert body["has_daily_bars"] is True
+
+
 def test_symbol_status_invalid_symbol_returns_400():
     client = _client_with(_make_session_factory())
 
@@ -280,6 +295,65 @@ def test_symbol_status_missing_param_returns_422():
     response = client.get("/api/data/symbol-status")
 
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /api/data/sync/news and GET /api/data/news
+# ---------------------------------------------------------------------------
+
+
+def test_sync_news_accepts_stock_name_and_list_news_filters_by_name(monkeypatch):
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "002156", "通富微电", "SZ")
+
+    class FakeNewsProvider:
+        def stock_news(self, symbol, *, start_at=None, end_at=None):
+            assert symbol == "002156"
+            return pd.DataFrame(
+                [
+                    {
+                        "source": "eastmoney_stock_news",
+                        "source_id": "em-002156-1",
+                        "symbol": symbol,
+                        "title": "通富微电获得机构买入",
+                        "body": "body",
+                        "url": "https://example.com/news/1",
+                        "event_type": "stock_news",
+                        "sentiment_label": "",
+                        "sentiment_score": None,
+                        "relevance_score": 1.0,
+                        "published_at": datetime(2026, 6, 4, 6, 53),
+                        "fetched_at": datetime(2026, 7, 3, 9, 0),
+                        "raw": {"id": 1},
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(data_module, "AkShareNewsProvider", FakeNewsProvider)
+    client = _client_with(session_factory)
+
+    sync_response = client.post(
+        "/api/data/sync/news",
+        json={
+            "symbol": "通富微电",
+            "start_at": "2026-06-01T00:00:00",
+            "end_at": "2026-07-03T23:59:59",
+        },
+    )
+    list_response = client.get("/api/data/news", params={"symbol": "通富微电"})
+
+    assert sync_response.status_code == 200
+    assert sync_response.json() == {
+        "symbol": "002156",
+        "synced": 1,
+        "status": "success",
+        "message": "",
+    }
+    assert list_response.status_code == 200
+    items = list_response.json()
+    assert len(items) == 1
+    assert items[0]["symbol"] == "002156"
+    assert items[0]["title"] == "通富微电获得机构买入"
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +505,23 @@ def test_list_daily_returns_bars_for_valid_date_range():
     bars = response.json()
     assert len(bars) == 2
     assert {bar["trade_date"] for bar in bars} == {"2024-01-02", "2024-01-03"}
+
+
+def test_list_daily_accepts_stock_name():
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "002156", "通富微电", "SZ")
+    _seed_bar(session_factory, "002156", date(2024, 1, 2))
+    client = _client_with(session_factory)
+
+    response = client.get(
+        "/api/data/daily",
+        params={"symbol": "通富微电", "start_date": "2024-01-01", "end_date": "2024-01-31"},
+    )
+
+    assert response.status_code == 200
+    bars = response.json()
+    assert len(bars) == 1
+    assert bars[0]["symbol"] == "002156"
 
 
 def test_list_daily_start_after_end_returns_400():

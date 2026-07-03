@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -173,3 +173,33 @@ class DataQualityReportOut(BaseModel):
     total_missing_bars: int
     items: list[DataQualityItemOut]
     warning: str
+
+
+class NewsSyncRequest(BaseModel):
+    symbol: str
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+
+
+class NewsSyncResponse(BaseModel):
+    symbol: str
+    synced: int
+    status: str
+    message: str = ""
+
+
+class NewsItemOut(BaseModel):
+    id: int
+    source: str
+    source_id: str
+    symbol: str | None
+    title: str
+    body: str
+    url: str
+    event_type: str
+    sentiment_label: str
+    sentiment_score: float | None
+    relevance_score: float | None
+    published_at: datetime
+    fetched_at: datetime
+    raw: str

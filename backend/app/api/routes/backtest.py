@@ -1,4 +1,7 @@
+from datetime import datetime, time, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException
+import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.backtest.engine import BacktestConfig, DailyBacktestEngine
@@ -13,7 +16,7 @@ from app.core.database import get_session
 from app.data.akshare_provider import AkShareProvider
 from app.data.pit_repository import PitRepository
 from app.data.repository import MarketDataRepository
-from app.data.symbols import INDEX_SYMBOL_WHITELIST, normalize_a_share_symbol, normalize_a_share_symbols
+from app.data.symbols import INDEX_SYMBOL_WHITELIST, normalize_a_share_symbol
 from app.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResponse, BacktestRunOut, EquityPoint, TradeOut
 from app.strategy.registry import get_strategy
 
@@ -91,7 +94,7 @@ def run_backtest(payload: BacktestRequest, session: Session = Depends(get_sessio
             )
     else:
         try:
-            symbols = normalize_a_share_symbols(payload.symbols)
+            symbols = repository.resolve_symbols(payload.symbols)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not symbols:
@@ -173,24 +176,37 @@ def run_backtest(payload: BacktestRequest, session: Session = Depends(get_sessio
                 ),
             )
 
-    result = DailyBacktestEngine().run(
-        strategy=strategy,
-        bars=bars,
-        benchmark_bars=benchmark_bars,
-        config=BacktestConfig(
-            start_date=payload.start_date,
-            end_date=payload.end_date,
-            initial_cash=payload.initial_cash,
-            commission_rate=payload.commission_rate,
-            stamp_tax_rate=payload.stamp_tax_rate,
-            slippage_rate=payload.slippage_rate,
-            rebalance_interval=payload.rebalance_interval,
-            risk_max_symbol_weight=payload.risk_max_symbol_weight,
-            risk_max_total_weight=payload.risk_max_total_weight,
-            risk_max_positions=payload.risk_max_positions,
-            params=payload.strategy_parameters(),
-        ),
+    strategy_params = payload.strategy_parameters()
+    news_history = _load_negative_news_history(
+        repository,
+        symbols,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        params=strategy_params,
     )
+
+    try:
+        result = DailyBacktestEngine().run(
+            strategy=strategy,
+            bars=bars,
+            benchmark_bars=benchmark_bars,
+            config=BacktestConfig(
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+                initial_cash=payload.initial_cash,
+                commission_rate=payload.commission_rate,
+                stamp_tax_rate=payload.stamp_tax_rate,
+                slippage_rate=payload.slippage_rate,
+                rebalance_interval=payload.rebalance_interval,
+                risk_max_symbol_weight=payload.risk_max_symbol_weight,
+                risk_max_total_weight=payload.risk_max_total_weight,
+                risk_max_positions=payload.risk_max_positions,
+                params=strategy_params,
+                news_history=news_history,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     run_id = save_backtest_result(session, payload, result)
     return BacktestResponse(
         run_id=run_id,
@@ -202,6 +218,42 @@ def run_backtest(payload: BacktestRequest, session: Session = Depends(get_sessio
         benchmark_curve=result.benchmark_curve,
         trades=result.trades,
     )
+
+
+def _load_negative_news_history(
+    repository: MarketDataRepository,
+    symbols: list[str],
+    *,
+    start_date,
+    end_date,
+    params: dict,
+) -> pd.DataFrame | None:
+    if not _truthy(params.get("use_db_negative_news", False)):
+        return None
+    lookback_days = max(0, int(params.get("negative_news_lookback_days", 3)))
+    start_at = datetime.combine(start_date - timedelta(days=lookback_days), time.min)
+    end_at = datetime.combine(end_date, time.max)
+    frames = [
+        repository.news_items(
+            symbol=symbol,
+            start_at=start_at,
+            end_at=end_at,
+            limit=5000,
+        )
+        for symbol in symbols
+    ]
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 @router.get("", response_model=list[BacktestRunOut])

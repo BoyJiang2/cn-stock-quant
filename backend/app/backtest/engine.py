@@ -23,6 +23,7 @@ class BacktestConfig:
     risk_max_total_weight: float = 1.0
     risk_max_positions: int | None = None
     params: dict = field(default_factory=dict)
+    news_history: pd.DataFrame | None = None
 
 
 @dataclass
@@ -57,6 +58,7 @@ class DailyBacktestEngine:
             normalized_benchmark = benchmark_bars.copy()
             normalized_benchmark["trade_date"] = pd.to_datetime(normalized_benchmark["trade_date"]).dt.date
             normalized_benchmark = normalized_benchmark.sort_values("trade_date")
+        normalized_news = _normalise_news_history(config.news_history)
 
         cash = float(config.initial_cash)
         positions: dict[str, int] = {}
@@ -106,6 +108,11 @@ class DailyBacktestEngine:
                 benchmark_history=(
                     normalized_benchmark[normalized_benchmark["trade_date"] <= current_date].copy()
                     if normalized_benchmark is not None
+                    else None
+                ),
+                news_history=(
+                    normalized_news[normalized_news["known_at"] <= _end_of_day(current_date)].copy()
+                    if normalized_news is not None
                     else None
                 ),
             )
@@ -233,6 +240,28 @@ def _execute_target_weights(
                 }
             )
     return cash
+
+
+def _normalise_news_history(news_history: pd.DataFrame | None) -> pd.DataFrame | None:
+    if news_history is None or news_history.empty:
+        return None
+    frame = news_history.copy()
+    if "known_at" not in frame.columns:
+        if not {"published_at", "fetched_at"}.issubset(frame.columns):
+            return None
+        frame["published_at"] = pd.to_datetime(frame["published_at"], errors="coerce")
+        frame["fetched_at"] = pd.to_datetime(frame["fetched_at"], errors="coerce")
+        frame["known_at"] = frame[["published_at", "fetched_at"]].max(axis=1)
+    else:
+        frame["known_at"] = pd.to_datetime(frame["known_at"], errors="coerce")
+    if "symbol" in frame.columns:
+        frame["symbol"] = frame["symbol"].astype(str).str.zfill(6)
+    frame = frame.dropna(subset=["known_at"])
+    return frame.sort_values("known_at")
+
+
+def _end_of_day(value: date) -> pd.Timestamp:
+    return pd.Timestamp(value) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
 
 
 def _position_value(positions: dict[str, int], last_prices: dict[str, float]) -> float:

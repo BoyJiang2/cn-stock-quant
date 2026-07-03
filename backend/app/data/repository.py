@@ -1,4 +1,5 @@
-from datetime import date
+import json
+from datetime import date, datetime
 from math import ceil
 
 import pandas as pd
@@ -6,12 +7,65 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.data.symbols import normalize_a_share_symbol, normalize_a_share_symbols
-from app.models.entities import DailyBar, IndexDailyBar, Stock, SyncJob, TradingCalendar
+from app.models.entities import DailyBar, IndexDailyBar, NewsItem, Stock, SyncJob, TradingCalendar
 
 
 class MarketDataRepository:
     def __init__(self, session: Session):
         self.session = session
+
+    def resolve_symbol(self, identifier: str) -> str:
+        """Resolve a user-facing stock identifier to the canonical 6-digit code.
+
+        API inputs often come from search boxes where users type a Chinese
+        stock name instead of a code. Provider and storage layers still work
+        with normalized symbols only, so name resolution is kept at the
+        repository boundary where the stock master table is available.
+        """
+        raw = str(identifier).strip()
+        try:
+            return normalize_a_share_symbol(raw)
+        except ValueError as original_exc:
+            if not raw:
+                raise original_exc
+
+            exact_matches = list(
+                self.session.scalars(
+                    select(Stock.symbol).where(Stock.name == raw).order_by(Stock.symbol)
+                )
+            )
+            if len(exact_matches) == 1:
+                return exact_matches[0]
+            if len(exact_matches) > 1:
+                raise ValueError(
+                    f"ambiguous stock name: {identifier}; matches: {', '.join(exact_matches[:10])}"
+                ) from original_exc
+
+            fuzzy_matches = list(
+                self.session.scalars(
+                    select(Stock.symbol)
+                    .where(Stock.name.contains(raw))
+                    .order_by(Stock.symbol)
+                    .limit(11)
+                )
+            )
+            if len(fuzzy_matches) == 1:
+                return fuzzy_matches[0]
+            if len(fuzzy_matches) > 1:
+                raise ValueError(
+                    f"ambiguous stock name: {identifier}; matches: {', '.join(fuzzy_matches[:10])}"
+                ) from original_exc
+            raise ValueError(f"unknown A-share symbol or stock name: {identifier}") from original_exc
+
+    def resolve_symbols(self, identifiers: list[str]) -> list[str]:
+        resolved: list[str] = []
+        seen: set[str] = set()
+        for identifier in identifiers:
+            symbol = self.resolve_symbol(identifier)
+            if symbol not in seen:
+                resolved.append(symbol)
+                seen.add(symbol)
+        return resolved
 
     def upsert_stocks(self, stocks: pd.DataFrame) -> int:
         count = 0
@@ -42,6 +96,118 @@ class MarketDataRepository:
             count += 1
         self.session.commit()
         return count
+
+    def upsert_news_items(self, items: pd.DataFrame) -> int:
+        if items.empty:
+            return 0
+        required = {"source", "source_id", "title", "published_at", "fetched_at"}
+        missing = required - set(items.columns)
+        if missing:
+            raise ValueError(f"news items missing required columns: {sorted(missing)}")
+
+        count = 0
+        for row in items.to_dict("records"):
+            source = str(row["source"]).strip()
+            source_id = str(row["source_id"]).strip()
+            if not source or not source_id:
+                raise ValueError("news source and source_id must be non-empty")
+            published_at = _to_datetime(row["published_at"])
+            fetched_at = _to_datetime(row["fetched_at"])
+            symbol = row.get("symbol")
+            normalized_symbol = (
+                normalize_a_share_symbol(symbol)
+                if symbol is not None and str(symbol).strip()
+                else None
+            )
+            existing = self.session.scalar(
+                select(NewsItem).where(
+                    NewsItem.source == source,
+                    NewsItem.source_id == source_id,
+                )
+            )
+            item = existing or NewsItem(
+                source=source,
+                source_id=source_id,
+                published_at=published_at,
+                fetched_at=fetched_at,
+                title=str(row["title"]),
+            )
+            item.symbol = normalized_symbol
+            item.title = str(row["title"])
+            item.body = str(row.get("body") or "")
+            item.url = str(row.get("url") or "")
+            item.event_type = str(row.get("event_type") or "")
+            item.sentiment_label = str(row.get("sentiment_label") or "")
+            item.sentiment_score = _optional_float(row.get("sentiment_score"))
+            item.relevance_score = _optional_float(row.get("relevance_score"))
+            item.published_at = published_at
+            item.fetched_at = fetched_at
+            item.raw = _raw_to_text(row.get("raw"))
+            item.updated_at = datetime.utcnow()
+            self.session.merge(item)
+            count += 1
+        self.session.commit()
+        return count
+
+    def news_items(
+        self,
+        *,
+        symbol: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        source: str | None = None,
+        limit: int = 200,
+    ) -> pd.DataFrame:
+        stmt = select(NewsItem)
+        if symbol is not None and str(symbol).strip():
+            stmt = stmt.where(NewsItem.symbol == normalize_a_share_symbol(symbol))
+        if source is not None and str(source).strip():
+            stmt = stmt.where(NewsItem.source == str(source).strip())
+        if start_at is not None:
+            stmt = stmt.where(NewsItem.published_at >= start_at)
+        if end_at is not None:
+            stmt = stmt.where(NewsItem.published_at <= end_at)
+        stmt = stmt.order_by(NewsItem.published_at.desc(), NewsItem.id.desc()).limit(
+            max(1, min(int(limit), 5000))
+        )
+        rows = list(self.session.scalars(stmt))
+        return pd.DataFrame(
+            [
+                {
+                    "id": row.id,
+                    "source": row.source,
+                    "source_id": row.source_id,
+                    "symbol": row.symbol,
+                    "title": row.title,
+                    "body": row.body,
+                    "url": row.url,
+                    "event_type": row.event_type,
+                    "sentiment_label": row.sentiment_label,
+                    "sentiment_score": row.sentiment_score,
+                    "relevance_score": row.relevance_score,
+                    "published_at": row.published_at,
+                    "fetched_at": row.fetched_at,
+                    "raw": row.raw,
+                }
+                for row in rows
+            ],
+            columns=[
+                "id",
+                "source",
+                "source_id",
+                "symbol",
+                "title",
+                "body",
+                "url",
+                "event_type",
+                "sentiment_label",
+                "sentiment_score",
+                "relevance_score",
+                "published_at",
+                "fetched_at",
+                "raw",
+            ],
+        )
 
     def trading_dates(self, start_date: date, end_date: date) -> list[date]:
         stmt = (
@@ -760,3 +926,33 @@ class MarketDataRepository:
             }
             for row in self.session.execute(stmt)
         ]
+
+
+def _to_datetime(value) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if hasattr(value, "to_pydatetime"):
+        return value.to_pydatetime()
+    parsed = pd.to_datetime(value)
+    if pd.isna(parsed):
+        raise ValueError("datetime value must not be NaT")
+    return parsed.to_pydatetime()
+
+
+def _optional_float(value) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    return float(value)
+
+
+def _raw_to_text(value) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)

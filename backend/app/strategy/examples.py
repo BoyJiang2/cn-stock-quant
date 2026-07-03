@@ -1,6 +1,33 @@
+from datetime import timedelta
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 
 from app.strategy.base import Strategy, StrategyContext, StrategyParameter
+
+
+def _default_ml_scores_path() -> str:
+    artifact_dir = Path(__file__).resolve().parents[2] / "artifacts" / "ml"
+    preferred = [
+        artifact_dir / "lgbm-fwd5-static-2026-predictions.csv",
+        artifact_dir / "wf-lgbm-fwd5-2026-v45-embargo15-predictions.csv",
+        artifact_dir / "wf-lgbm-fwd5-2026-embargo15-predictions.csv",
+    ]
+    for path in preferred:
+        if path.exists():
+            return str(path)
+    candidates = sorted(
+        (
+            path
+            for path in artifact_dir.glob("*-predictions.csv")
+            if not path.name.startswith("quick-")
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return str(candidates[0]) if candidates else ""
 
 
 class MovingAverageStrategy(Strategy):
@@ -868,6 +895,541 @@ class StableReversalStrategy(Strategy):
         }
 
 
+class MultiFactorRankStrategy(Strategy):
+    name = "multi_factor_rank"
+    display_name = "Multi-Factor Rank"
+    description = (
+        "Combines the strongest current factor evidence: low amount volatility, "
+        "low-vol reversal, stable amount, inverse momentum, and left-tail risk. "
+        "It is designed as the first bridge from single-factor research toward "
+        "LightGBM-style ranked stock selection."
+    )
+    parameters = [
+        StrategyParameter("top_n", "Position count", "int", 30, min=1, step=1),
+        StrategyParameter("max_position_weight", "Single-name cap", "float", 0.05, min=0.0, max=1.0, step=0.01),
+        StrategyParameter("max_total_weight", "Total exposure", "float", 0.8, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("min_avg_amount_20d", "20d amount floor", "float", 50_000_000, min=0.0, step=1_000_000),
+        StrategyParameter("min_price", "Minimum price", "float", 5.0, min=0.0, step=0.1),
+        StrategyParameter("reversal_window", "Reversal window", "int", 20, min=2, step=1),
+        StrategyParameter("momentum_window", "Inverse momentum window", "int", 60, min=5, step=1),
+        StrategyParameter("amount_window", "Amount window", "int", 20, min=2, step=1),
+        StrategyParameter("tail_window", "Tail-risk window", "int", 20, min=5, step=1),
+        StrategyParameter("max_amount_ratio", "Crowding ratio cap", "float", 2.5, min=0.0, step=0.1),
+        StrategyParameter("hold_rank_multiplier", "Hold rank buffer", "float", 1.3, min=1.0, step=0.1),
+        StrategyParameter("entry_rank_multiplier", "Entry rank buffer", "float", 1.0, min=1.0, step=0.1),
+        StrategyParameter("amount_vol_weight", "Amount-vol weight", "float", 0.30, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("low_vol_reversal_weight", "Low-vol reversal weight", "float", 0.30, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("amount_stability_weight", "Amount stability weight", "float", 0.20, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("inverse_momentum_weight", "Inverse momentum weight", "float", 0.15, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("tail_risk_weight", "Tail-risk weight", "float", 0.05, min=0.0, max=1.0, step=0.05),
+    ]
+
+    def generate_target_weights(
+        self, context: StrategyContext, history: pd.DataFrame
+    ) -> dict[str, float]:
+        if history.empty:
+            return {}
+
+        top_n = max(1, int(context.params.get("top_n", 30)))
+        max_position_weight = float(context.params.get("max_position_weight", 0.05))
+        max_total_weight = float(context.params.get("max_total_weight", 0.8))
+        min_avg_amount_20d = float(context.params.get("min_avg_amount_20d", 50_000_000))
+        min_price = float(context.params.get("min_price", 5.0))
+        reversal_window = int(context.params.get("reversal_window", 20))
+        momentum_window = int(context.params.get("momentum_window", 60))
+        amount_window = int(context.params.get("amount_window", 20))
+        tail_window = int(context.params.get("tail_window", 20))
+        max_amount_ratio = float(context.params.get("max_amount_ratio", 2.5))
+        hold_rank_multiplier = float(context.params.get("hold_rank_multiplier", 1.3))
+        entry_rank_multiplier = float(context.params.get("entry_rank_multiplier", 1.0))
+        factor_weights = {
+            "amount_vol": float(context.params.get("amount_vol_weight", 0.30)),
+            "low_vol_reversal": float(context.params.get("low_vol_reversal_weight", 0.30)),
+            "amount_stability": float(context.params.get("amount_stability_weight", 0.20)),
+            "inverse_momentum": float(context.params.get("inverse_momentum_weight", 0.15)),
+            "tail_risk": float(context.params.get("tail_risk_weight", 0.05)),
+        }
+
+        for name, value in [
+            ("reversal_window", reversal_window),
+            ("momentum_window", momentum_window),
+            ("amount_window", amount_window),
+            ("tail_window", tail_window),
+        ]:
+            if value <= 1:
+                raise ValueError(f"{name} must be > 1, got {value}")
+        for name, value in [
+            ("max_position_weight", max_position_weight),
+            ("max_total_weight", max_total_weight),
+        ]:
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        for name, value in [
+            ("min_avg_amount_20d", min_avg_amount_20d),
+            ("min_price", min_price),
+            ("max_amount_ratio", max_amount_ratio),
+            ("hold_rank_multiplier", hold_rank_multiplier),
+            ("entry_rank_multiplier", entry_rank_multiplier),
+            *[(key, weight) for key, weight in factor_weights.items()],
+        ]:
+            if value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        if hold_rank_multiplier < 1.0:
+            raise ValueError(f"hold_rank_multiplier must be >= 1, got {hold_rank_multiplier}")
+        if entry_rank_multiplier < 1.0:
+            raise ValueError(f"entry_rank_multiplier must be >= 1, got {entry_rank_multiplier}")
+        weight_sum = sum(factor_weights.values())
+        if weight_sum <= 0.0:
+            raise ValueError("at least one factor weight must be positive")
+
+        all_symbols = list(history["symbol"].unique())
+        min_len = max(momentum_window + 1, reversal_window + 1, amount_window + 1, tail_window + 1, 20)
+        candidates: list[dict[str, float | str]] = []
+        for symbol, group in history.groupby("symbol"):
+            ordered = group.sort_values("trade_date")
+            if len(ordered) < min_len or "amount" not in ordered.columns:
+                continue
+
+            closes = ordered["close"].astype(float)
+            amounts = ordered["amount"].astype(float)
+            latest_close = float(closes.iloc[-1])
+            if latest_close < min_price:
+                continue
+
+            avg_amount_20d = float(amounts.tail(20).mean())
+            if min_avg_amount_20d > 0.0 and avg_amount_20d < min_avg_amount_20d:
+                continue
+
+            amount_short = float(amounts.tail(5).mean())
+            amount_long = float(amounts.tail(amount_window).mean())
+            if amount_long <= 0.0:
+                continue
+            if max_amount_ratio > 0.0 and amount_short / amount_long > max_amount_ratio:
+                continue
+
+            returns = closes.pct_change(fill_method=None).dropna()
+            if len(returns) < max(reversal_window, tail_window):
+                continue
+
+            reversal_base = float(closes.iloc[-reversal_window - 1])
+            momentum_base = float(closes.iloc[-momentum_window - 1])
+            if reversal_base <= 0.0 or momentum_base <= 0.0 or latest_close <= 0.0:
+                continue
+            reversal = reversal_base / latest_close - 1.0
+            momentum = latest_close / momentum_base - 1.0
+
+            vol = float(returns.tail(reversal_window).std())
+            if vol <= 0.0 or pd.isna(vol):
+                continue
+            low_vol_reversal = reversal / vol
+
+            amount_tail = amounts.tail(amount_window)
+            amount_std = float(amount_tail.std())
+            if amount_std <= 0.0 or pd.isna(amount_std):
+                continue
+            amount_stability = float(amount_tail.mean()) / amount_std
+
+            log_amount_change = np.log(amounts.where(amounts > 0.0)).diff()
+            amount_volatility = float(log_amount_change.tail(amount_window).std())
+            if amount_volatility < 0.0 or pd.isna(amount_volatility):
+                continue
+
+            tail_risk = float(returns.tail(tail_window).quantile(0.05))
+            if pd.isna(tail_risk):
+                continue
+
+            candidates.append(
+                {
+                    "symbol": str(symbol),
+                    "amount_vol": -amount_volatility,
+                    "low_vol_reversal": low_vol_reversal,
+                    "amount_stability": amount_stability,
+                    "inverse_momentum": -momentum,
+                    "tail_risk": tail_risk,
+                }
+            )
+
+        if not candidates:
+            return {symbol: 0.0 for symbol in all_symbols}
+
+        score = [0.0] * len(candidates)
+        for factor_name, raw_weight in factor_weights.items():
+            if raw_weight <= 0.0:
+                continue
+            percentiles = StableReversalStrategy._percentiles(
+                [float(item[factor_name]) for item in candidates]
+            )
+            normalised_weight = raw_weight / weight_sum
+            for index, percentile in enumerate(percentiles):
+                score[index] += normalised_weight * percentile
+
+        for index, item in enumerate(candidates):
+            item["score"] = score[index]
+
+        ranked = sorted(candidates, key=lambda item: float(item["score"]), reverse=True)
+        rank_by_symbol = {
+            str(item["symbol"]): rank
+            for rank, item in enumerate(ranked, start=1)
+        }
+        hold_cutoff = max(top_n, int(top_n * hold_rank_multiplier))
+        entry_cutoff = max(top_n, int(top_n * entry_rank_multiplier))
+        retained_symbols = {
+            symbol
+            for symbol, quantity in context.positions.items()
+            if quantity > 0 and rank_by_symbol.get(symbol, hold_cutoff + 1) <= hold_cutoff
+        }
+
+        selected_symbols = [
+            str(item["symbol"])
+            for item in ranked
+            if str(item["symbol"]) in retained_symbols
+        ][:top_n]
+        for item in ranked:
+            symbol = str(item["symbol"])
+            if len(selected_symbols) >= top_n:
+                break
+            if symbol in selected_symbols:
+                continue
+            if rank_by_symbol[symbol] > entry_cutoff:
+                continue
+            selected_symbols.append(symbol)
+
+        weight = min(max_position_weight, max_total_weight / len(selected_symbols))
+        selected_symbol_set = set(selected_symbols)
+        return {
+            symbol: (weight if symbol in selected_symbol_set else 0.0)
+            for symbol in all_symbols
+        }
+
+
+class MLScoreRankStrategy(Strategy):
+    name = "ml_score_rank"
+    display_name = "ML Score Rank"
+    description = (
+        "Reads an offline prediction CSV with trade_date/symbol/score columns, "
+        "ranks stocks by same-date model score, and returns equal target weights."
+    )
+    parameters = [
+        StrategyParameter("scores_path", "Scores CSV path", "str", _default_ml_scores_path()),
+        StrategyParameter("score_column", "Score column", "str", "score"),
+        StrategyParameter("top_n", "Position count", "int", 30, min=1, step=1),
+        StrategyParameter("max_position_weight", "Single-name cap", "float", 0.05, min=0.0, max=1.0, step=0.01),
+        StrategyParameter("max_total_weight", "Total exposure", "float", 0.8, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("min_score", "Minimum score", "float", -1.0, step=0.001),
+        StrategyParameter("min_avg_amount_20d", "20d amount floor", "float", 50_000_000, min=0.0, step=1_000_000),
+        StrategyParameter("min_price", "Minimum price", "float", 5.0, min=0.0, step=0.1),
+        StrategyParameter("hold_rank_multiplier", "Hold rank buffer", "float", 1.3, min=1.0, step=0.1),
+        StrategyParameter("entry_rank_multiplier", "Entry rank buffer", "float", 1.0, min=1.0, step=0.1),
+        StrategyParameter("trade_gap_path", "Trade-gap CSV path", "str", ""),
+        StrategyParameter("exclude_gap_types", "Excluded gap types", "str", "suspended,provider_gap,limit_halt,unknown"),
+        StrategyParameter("negative_news_path", "Negative-news CSV path", "str", ""),
+        StrategyParameter("use_db_negative_news", "Use DB negative news", "bool", False),
+        StrategyParameter("negative_news_lookback_days", "Negative-news lookback days", "int", 3, min=0, step=1),
+        StrategyParameter("negative_news_min_relevance", "Negative-news relevance floor", "float", 0.0, min=0.0, max=1.0, step=0.05),
+        StrategyParameter("negative_news_max_sentiment", "Negative sentiment score cap", "float", -0.2, step=0.05),
+    ]
+
+    def generate_target_weights(
+        self, context: StrategyContext, history: pd.DataFrame
+    ) -> dict[str, float]:
+        if history.empty:
+            return {}
+
+        scores_path = str(context.params.get("scores_path", "")).strip()
+        if not scores_path:
+            raise ValueError("scores_path is required for ml_score_rank")
+        score_column = str(context.params.get("score_column", "score")).strip() or "score"
+        top_n = max(1, int(context.params.get("top_n", 30)))
+        max_position_weight = float(context.params.get("max_position_weight", 0.05))
+        max_total_weight = float(context.params.get("max_total_weight", 0.8))
+        min_score = float(context.params.get("min_score", -1.0))
+        min_avg_amount_20d = float(context.params.get("min_avg_amount_20d", 50_000_000))
+        min_price = float(context.params.get("min_price", 5.0))
+        hold_rank_multiplier = float(context.params.get("hold_rank_multiplier", 1.3))
+        entry_rank_multiplier = float(context.params.get("entry_rank_multiplier", 1.0))
+        trade_gap_path = str(context.params.get("trade_gap_path", "")).strip()
+        exclude_gap_types = {
+            item.strip().lower()
+            for item in str(
+                context.params.get(
+                    "exclude_gap_types", "suspended,provider_gap,limit_halt,unknown"
+                )
+            ).split(",")
+            if item.strip()
+        }
+        negative_news_path = str(context.params.get("negative_news_path", "")).strip()
+        negative_news_lookback_days = max(
+            0, int(context.params.get("negative_news_lookback_days", 3))
+        )
+        negative_news_min_relevance = float(
+            context.params.get("negative_news_min_relevance", 0.0)
+        )
+        negative_news_max_sentiment = float(
+            context.params.get("negative_news_max_sentiment", -0.2)
+        )
+
+        for name, value in [
+            ("max_position_weight", max_position_weight),
+            ("max_total_weight", max_total_weight),
+        ]:
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        for name, value in [
+            ("min_avg_amount_20d", min_avg_amount_20d),
+            ("min_price", min_price),
+            ("hold_rank_multiplier", hold_rank_multiplier),
+            ("entry_rank_multiplier", entry_rank_multiplier),
+        ]:
+            if value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        if hold_rank_multiplier < 1.0:
+            raise ValueError(f"hold_rank_multiplier must be >= 1, got {hold_rank_multiplier}")
+        if entry_rank_multiplier < 1.0:
+            raise ValueError(f"entry_rank_multiplier must be >= 1, got {entry_rank_multiplier}")
+
+        all_symbols = list(history["symbol"].unique())
+        score_frame = _load_ml_scores(scores_path, score_column)
+        today_scores = score_frame[score_frame["trade_date"] == context.current_date]
+        if today_scores.empty:
+            return {symbol: 0.0 for symbol in all_symbols}
+        blocked_symbols: set[str] = set()
+        if trade_gap_path:
+            blocked_symbols.update(
+                _blocked_by_trade_gap(trade_gap_path, context.current_date, exclude_gap_types)
+            )
+        if negative_news_path:
+            blocked_symbols.update(
+                _blocked_by_negative_news(
+                    negative_news_path,
+                    context.current_date,
+                    lookback_days=negative_news_lookback_days,
+                    min_relevance=negative_news_min_relevance,
+                    max_sentiment=negative_news_max_sentiment,
+                )
+            )
+        if _truthy(context.params.get("use_db_negative_news", False)):
+            blocked_symbols.update(
+                _blocked_by_negative_news_frame(
+                    context.news_history,
+                    context.current_date,
+                    lookback_days=negative_news_lookback_days,
+                    min_relevance=negative_news_min_relevance,
+                    max_sentiment=negative_news_max_sentiment,
+                )
+            )
+
+        latest = history.sort_values(["symbol", "trade_date"]).groupby("symbol").tail(20)
+        eligible_symbols: set[str] = set()
+        for symbol, group in latest.groupby("symbol"):
+            ordered = group.sort_values("trade_date")
+            if ordered.empty:
+                continue
+            latest_close = float(ordered["close"].iloc[-1])
+            if latest_close < min_price:
+                continue
+            if min_avg_amount_20d > 0.0:
+                if "amount" not in ordered.columns or len(ordered) < 20:
+                    continue
+                if float(ordered["amount"].astype(float).tail(20).mean()) < min_avg_amount_20d:
+                    continue
+            symbol = str(symbol)
+            if symbol in blocked_symbols:
+                continue
+            eligible_symbols.add(symbol)
+
+        candidates = [
+            (str(row.symbol), float(row.score))
+            for row in today_scores.itertuples()
+            if str(row.symbol) in eligible_symbols and float(row.score) >= min_score
+        ]
+        ranked = sorted(candidates, key=lambda item: item[1], reverse=True)
+        if not ranked:
+            return {symbol: 0.0 for symbol in all_symbols}
+
+        rank_by_symbol = {symbol: rank for rank, (symbol, _) in enumerate(ranked, start=1)}
+        hold_cutoff = max(top_n, int(top_n * hold_rank_multiplier))
+        entry_cutoff = max(top_n, int(top_n * entry_rank_multiplier))
+        retained_symbols = {
+            symbol
+            for symbol, quantity in context.positions.items()
+            if quantity > 0 and rank_by_symbol.get(symbol, hold_cutoff + 1) <= hold_cutoff
+        }
+
+        selected_symbols = [
+            symbol for symbol, _ in ranked if symbol in retained_symbols
+        ][:top_n]
+        for symbol, _ in ranked:
+            if len(selected_symbols) >= top_n:
+                break
+            if symbol in selected_symbols:
+                continue
+            if rank_by_symbol[symbol] > entry_cutoff:
+                continue
+            selected_symbols.append(symbol)
+
+        weight = min(max_position_weight, max_total_weight / len(selected_symbols))
+        selected_symbol_set = set(selected_symbols)
+        return {
+            symbol: (weight if symbol in selected_symbol_set else 0.0)
+            for symbol in all_symbols
+        }
+
+
+@lru_cache(maxsize=8)
+def _load_ml_scores(path: str, score_column: str) -> pd.DataFrame:
+    scores_path = Path(path)
+    if not scores_path.exists():
+        raise ValueError(f"scores_path does not exist: {path}")
+    scores = pd.read_csv(scores_path, dtype={"symbol": "string"})
+    required = {"trade_date", "symbol", score_column}
+    missing = required - set(scores.columns)
+    if missing:
+        raise ValueError(f"scores file is missing columns: {', '.join(sorted(missing))}")
+    loaded = scores[["trade_date", "symbol", score_column]].rename(
+        columns={score_column: "score"}
+    )
+    loaded["trade_date"] = pd.to_datetime(loaded["trade_date"]).dt.date
+    loaded["symbol"] = loaded["symbol"].map(_normalise_score_symbol)
+    loaded["score"] = pd.to_numeric(loaded["score"], errors="coerce")
+    loaded = loaded.dropna(subset=["trade_date", "symbol", "score"])
+    loaded = loaded.sort_values(["trade_date", "score"], ascending=[True, False])
+    return loaded.drop_duplicates(["trade_date", "symbol"], keep="first")
+
+
+def _normalise_score_symbol(value: object) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    symbol = str(value).strip()
+    if symbol.endswith(".0"):
+        symbol = symbol[:-2]
+    return symbol.zfill(6) if symbol.isdigit() and len(symbol) <= 6 else symbol
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+@lru_cache(maxsize=8)
+def _load_trade_gaps(path: str) -> pd.DataFrame:
+    frame = pd.read_csv(path, dtype={"symbol": "string"})
+    required = {"symbol", "trade_date", "gap_type"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"trade gap file is missing columns: {', '.join(sorted(missing))}")
+    out = frame[["symbol", "trade_date", "gap_type"]].copy()
+    out["symbol"] = out["symbol"].map(_normalise_score_symbol)
+    out["trade_date"] = pd.to_datetime(out["trade_date"]).dt.date
+    out["gap_type"] = out["gap_type"].astype(str).str.strip().str.lower()
+    return out.dropna(subset=["symbol", "trade_date", "gap_type"])
+
+
+def _blocked_by_trade_gap(
+    path: str, current_date, exclude_gap_types: set[str]
+) -> set[str]:
+    if not exclude_gap_types:
+        return set()
+    gaps = _load_trade_gaps(path)
+    today = gaps[gaps["trade_date"] == current_date]
+    if today.empty:
+        return set()
+    return set(today[today["gap_type"].isin(exclude_gap_types)]["symbol"].astype(str))
+
+
+@lru_cache(maxsize=8)
+def _load_negative_news(path: str) -> pd.DataFrame:
+    frame = pd.read_csv(path, dtype={"symbol": "string"})
+    required = {"symbol", "published_at", "fetched_at", "sentiment_label", "sentiment_score"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"negative news file is missing columns: {', '.join(sorted(missing))}")
+    out = frame.copy()
+    out["symbol"] = out["symbol"].map(_normalise_score_symbol)
+    out["published_at"] = pd.to_datetime(out["published_at"], errors="coerce")
+    out["fetched_at"] = pd.to_datetime(out["fetched_at"], errors="coerce")
+    out["known_at"] = out[["published_at", "fetched_at"]].max(axis=1)
+    out["sentiment_label"] = out["sentiment_label"].astype(str).str.strip().str.lower()
+    out["sentiment_score"] = pd.to_numeric(out["sentiment_score"], errors="coerce")
+    if "relevance_score" not in out.columns:
+        out["relevance_score"] = 1.0
+    out["relevance_score"] = pd.to_numeric(out["relevance_score"], errors="coerce").fillna(0.0)
+    return out.dropna(subset=["symbol", "known_at", "sentiment_score"])
+
+
+def _blocked_by_negative_news(
+    path: str,
+    current_date,
+    *,
+    lookback_days: int,
+    min_relevance: float,
+    max_sentiment: float,
+) -> set[str]:
+    news = _load_negative_news(path)
+    end = pd.Timestamp(current_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+    start = pd.Timestamp(current_date) - pd.Timedelta(days=lookback_days)
+    filtered = news[
+        (news["known_at"] >= start)
+        & (news["known_at"] <= end)
+        & (news["relevance_score"] >= min_relevance)
+        & (
+            (news["sentiment_label"].isin({"negative", "risk", "bearish", "bad"}))
+            | (news["sentiment_score"] <= max_sentiment)
+        )
+    ]
+    return set(filtered["symbol"].astype(str))
+
+
+def _blocked_by_negative_news_frame(
+    frame: pd.DataFrame | None,
+    current_date,
+    *,
+    lookback_days: int,
+    min_relevance: float,
+    max_sentiment: float,
+) -> set[str]:
+    if frame is None or frame.empty:
+        return set()
+    news = frame.copy()
+    if "known_at" not in news.columns:
+        if not {"published_at", "fetched_at"}.issubset(news.columns):
+            return set()
+        news["published_at"] = pd.to_datetime(news["published_at"], errors="coerce")
+        news["fetched_at"] = pd.to_datetime(news["fetched_at"], errors="coerce")
+        news["known_at"] = news[["published_at", "fetched_at"]].max(axis=1)
+    else:
+        news["known_at"] = pd.to_datetime(news["known_at"], errors="coerce")
+    if "relevance_score" not in news.columns:
+        news["relevance_score"] = 1.0
+    news["symbol"] = news["symbol"].map(_normalise_score_symbol)
+    if "sentiment_label" not in news.columns:
+        news["sentiment_label"] = ""
+    if "sentiment_score" not in news.columns:
+        news["sentiment_score"] = np.nan
+    if "event_type" not in news.columns:
+        news["event_type"] = ""
+    news["sentiment_label"] = news["sentiment_label"].astype(str).str.strip().str.lower()
+    news["sentiment_score"] = pd.to_numeric(news["sentiment_score"], errors="coerce")
+    news["relevance_score"] = pd.to_numeric(news["relevance_score"], errors="coerce").fillna(0.0)
+    news["event_type"] = news["event_type"].astype(str).str.strip().str.lower()
+    news = news.dropna(subset=["symbol", "known_at"])
+    end = pd.Timestamp(current_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+    start = pd.Timestamp(current_date) - pd.Timedelta(days=lookback_days)
+    filtered = news[
+        (news["known_at"] >= start)
+        & (news["known_at"] <= end)
+        & (news["relevance_score"] >= min_relevance)
+        & (
+            (news["event_type"].isin({"negative_news", "risk_news"}))
+            | (news["sentiment_label"].isin({"negative", "risk", "bearish", "bad"}))
+            | (news["sentiment_score"] <= max_sentiment)
+        )
+    ]
+    return set(filtered["symbol"].astype(str))
+
+
 BUILTIN_STRATEGIES: dict[str, type[Strategy]] = {
     MovingAverageStrategy.name: MovingAverageStrategy,
     MomentumRankStrategy.name: MomentumRankStrategy,
@@ -875,4 +1437,6 @@ BUILTIN_STRATEGIES: dict[str, type[Strategy]] = {
     MeanReversionStrategy.name: MeanReversionStrategy,
     LowVolDefensiveStrategy.name: LowVolDefensiveStrategy,
     StableReversalStrategy.name: StableReversalStrategy,
+    MultiFactorRankStrategy.name: MultiFactorRankStrategy,
+    MLScoreRankStrategy.name: MLScoreRankStrategy,
 }

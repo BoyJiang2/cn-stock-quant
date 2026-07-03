@@ -21,6 +21,21 @@ _FACTOR_SAMPLE = [
     "amount_ratio_5d_20d",
     "price_volume_corr_20d",
     "up_day_ratio_20d",
+    "money_flow_proxy_20d",
+    "low_vol_reversal_20d",
+    "close_position_20d",
+    "tail_risk_20d",
+    "upper_shadow_20d",
+    "lower_shadow_20d",
+    "close_location_20d",
+    "rsv_20d",
+    "amount_shock_z_20d",
+    "linear_slope_20d",
+    "trend_rsquare_20d",
+    "trend_residual_20d",
+    "volume_return_divergence_20d",
+    "price_rank_20d",
+    "reversal_10d",
 ]
 
 

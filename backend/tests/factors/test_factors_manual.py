@@ -12,7 +12,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from app.factors import BUILTIN_FACTOR_NAMES, FactorLab, FactorSpec
+from app.factors import BUILTIN_FACTOR_NAMES, FACTOR_DIRECTIONS, FactorLab, FactorSpec
 
 
 def _last_value(panel: pd.DataFrame, symbol: str, factor: str) -> float:
@@ -29,6 +29,19 @@ def test_output_is_multiindex_with_all_builtin_factors(build_bars, factor_lab):
     assert isinstance(out.index, pd.MultiIndex)
     # every (trade_date, symbol) combo present
     assert out.shape[0] == 80 * 2
+
+
+def test_second_batch_factors_registered_with_directions():
+    expected = {
+        "linear_slope_20d": 1,
+        "trend_rsquare_20d": 1,
+        "trend_residual_20d": -1,
+        "volume_return_divergence_20d": 1,
+        "price_rank_20d": 1,
+    }
+    for name, direction in expected.items():
+        assert name in BUILTIN_FACTOR_NAMES
+        assert FACTOR_DIRECTIONS[name] == direction
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +89,13 @@ def test_reversal_5d_hand_calc(build_bars, factor_lab):
     bars = build_bars({"000001": [10, 10, 10, 10, 10, 8]})
     out = factor_lab.compute(bars, [FactorSpec("reversal_5d")])
     assert math.isclose(_last_value(out, "000001", "reversal_5d"), 0.25, rel_tol=1e-12)
+
+
+def test_reversal_10d_hand_calc(build_bars, factor_lab):
+    # flat 10 then drop to 8 -> reversal = close[0]/close[10] - 1 = 10/8 - 1 = 0.25
+    bars = build_bars({"000001": [10.0] * 10 + [8.0]})
+    out = factor_lab.compute(bars, [FactorSpec("reversal_10d")])
+    assert math.isclose(_last_value(out, "000001", "reversal_10d"), 0.25, rel_tol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +250,145 @@ def test_up_day_ratio_20d_hand_calc(build_bars, factor_lab):
     bars = build_bars({"000001": px})
     out = factor_lab.compute(bars, [FactorSpec("up_day_ratio_20d")])
     assert math.isclose(_last_value(out, "000001", "up_day_ratio_20d"), 0.6, rel_tol=1e-9)
+
+
+def test_money_flow_proxy_20d_hand_calc(build_bars, factor_lab):
+    # 12 positive-return days and 8 negative-return days, constant amount.
+    signs = [1] * 12 + [-1] * 8
+    px = [100.0]
+    for s in signs:
+        px.append(px[-1] * (1 + s * 0.01))
+    bars = build_bars({"000001": px}, amount=1000.0)
+    out = factor_lab.compute(bars, [FactorSpec("money_flow_proxy_20d")])
+    expected = (12 - 8) / 20
+    assert math.isclose(
+        _last_value(out, "000001", "money_flow_proxy_20d"), expected, rel_tol=1e-9
+    )
+
+
+def test_close_position_20d_hand_calc(build_bars, factor_lab):
+    # Close at 15 inside a trailing [10, 20] channel -> 0.5.
+    prices = [15.0] * 20
+    bars = build_bars(
+        {"000001": prices},
+        high={"000001": [20.0] * 20},
+        low={"000001": [10.0] * 20},
+    )
+    out = factor_lab.compute(bars, [FactorSpec("close_position_20d")])
+    assert math.isclose(_last_value(out, "000001", "close_position_20d"), 0.5, rel_tol=1e-12)
+
+
+def test_price_efficiency_20d_hand_calc(build_bars, factor_lab):
+    # Monotonic +1% path: net move equals path length, so efficiency is 1.
+    px = [100.0]
+    for _ in range(20):
+        px.append(px[-1] * 1.01)
+    bars = build_bars({"000001": px})
+    out = factor_lab.compute(bars, [FactorSpec("price_efficiency_20d")])
+    assert math.isclose(_last_value(out, "000001", "price_efficiency_20d"), 1.0, rel_tol=1e-9)
+
+
+def test_amount_volatility_20d_hand_calc(build_bars, factor_lab):
+    # Constant proportional amount growth -> constant log diff -> zero volatility.
+    amounts = [1000.0 * (1.01**i) for i in range(21)]
+    bars = build_bars({"000001": [10.0] * 21}, amount_by_symbol={"000001": amounts})
+    out = factor_lab.compute(bars, [FactorSpec("amount_volatility_20d")])
+    assert math.isclose(_last_value(out, "000001", "amount_volatility_20d"), 0.0, abs_tol=1e-12)
+
+
+def test_shadow_and_close_location_20d_hand_calc(build_bars, factor_lab):
+    # open=close=10, high=14, low=8:
+    # upper=(14-10)/(14-8)=2/3, lower=(10-8)/(14-8)=1/3,
+    # close_location=(2*10-14-8)/(14-8)=-1/3.
+    bars = build_bars(
+        {"000001": [10.0] * 20},
+        high={"000001": [14.0] * 20},
+        low={"000001": [8.0] * 20},
+    )
+    factors = [
+        FactorSpec("upper_shadow_20d"),
+        FactorSpec("lower_shadow_20d"),
+        FactorSpec("close_location_20d"),
+    ]
+    out = factor_lab.compute(bars, factors)
+    assert math.isclose(_last_value(out, "000001", "upper_shadow_20d"), 2.0 / 3.0, rel_tol=1e-12)
+    assert math.isclose(_last_value(out, "000001", "lower_shadow_20d"), 1.0 / 3.0, rel_tol=1e-12)
+    assert math.isclose(_last_value(out, "000001", "close_location_20d"), -1.0 / 3.0, rel_tol=1e-12)
+
+
+def test_rsv_20d_hand_calc(build_bars, factor_lab):
+    # close at 15 inside a trailing [10, 20] channel -> (15-10)/(20-10) = 0.5.
+    bars = build_bars(
+        {"000001": [15.0] * 20},
+        high={"000001": [20.0] * 20},
+        low={"000001": [10.0] * 20},
+    )
+    out = factor_lab.compute(bars, [FactorSpec("rsv_20d")])
+    assert math.isclose(_last_value(out, "000001", "rsv_20d"), 0.5, rel_tol=1e-12)
+
+
+def test_amount_shock_z_20d_hand_calc(build_bars, factor_lab):
+    # 19 days at 100 and one day at 200:
+    # mean=105, sample variance=(19*5^2 + 95^2)/19=500, z=95/sqrt(500).
+    amounts = [100.0] * 19 + [200.0]
+    bars = build_bars({"000001": [10.0] * 20}, amount_by_symbol={"000001": amounts})
+    out = factor_lab.compute(bars, [FactorSpec("amount_shock_z_20d")])
+    expected = 95.0 / math.sqrt(500.0)
+    assert math.isclose(_last_value(out, "000001", "amount_shock_z_20d"), expected, rel_tol=1e-12)
+
+
+def test_linear_slope_20d_hand_calc(build_bars, factor_lab):
+    # close = 1..20 over the 20-day window -> OLS slope = 1, scaled by last close 20.
+    bars = build_bars({"000001": list(range(1, 21))})
+    out = factor_lab.compute(bars, [FactorSpec("linear_slope_20d")])
+    assert math.isclose(_last_value(out, "000001", "linear_slope_20d"), 1.0 / 20.0, rel_tol=1e-12)
+
+
+def test_trend_rsquare_20d_perfect_line_is_one(build_bars, factor_lab):
+    bars = build_bars({"000001": list(range(10, 30))})
+    out = factor_lab.compute(bars, [FactorSpec("trend_rsquare_20d")])
+    assert math.isclose(_last_value(out, "000001", "trend_rsquare_20d"), 1.0, rel_tol=1e-12)
+
+
+def test_trend_residual_20d_hand_calc(build_bars, factor_lab):
+    # 19 days at 10 and one day at 30.
+    # OLS slope = 190 / 665 = 38/133, fitted last = 1824/133,
+    # residual = 30 - 1824/133 = 2166/133, scaled by 30 = 361/665.
+    bars = build_bars({"000001": [10.0] * 19 + [30.0]})
+    out = factor_lab.compute(bars, [FactorSpec("trend_residual_20d")])
+    expected = 361.0 / 665.0
+    assert math.isclose(_last_value(out, "000001", "trend_residual_20d"), expected, rel_tol=1e-12)
+
+
+def test_volume_return_divergence_20d_perfect_positive(build_bars, factor_lab):
+    # Make log(volume).diff() exactly equal to the 20 daily simple returns.
+    returns = [0.01 * (i - 9) for i in range(20)]  # -0.09 .. +0.10
+    prices = [100.0]
+    volumes = [1_000_000.0]
+    for r in returns:
+        prices.append(prices[-1] * (1.0 + r))
+        volumes.append(volumes[-1] * math.exp(r))
+    bars = build_bars({"000001": prices}, volume_by_symbol={"000001": volumes})
+    out = factor_lab.compute(bars, [FactorSpec("volume_return_divergence_20d")])
+    assert math.isclose(
+        _last_value(out, "000001", "volume_return_divergence_20d"),
+        1.0,
+        abs_tol=1e-9,
+    )
+
+
+def test_price_rank_20d_hand_calc(build_bars, factor_lab):
+    bars = build_bars(
+        {
+            "000001": list(range(1, 21)),
+            "600000": list(range(2, 21)) + [1],
+            "300001": [10.0] * 20,
+        }
+    )
+    out = factor_lab.compute(bars, [FactorSpec("price_rank_20d")])
+    assert math.isclose(_last_value(out, "000001", "price_rank_20d"), 1.0, rel_tol=1e-12)
+    assert math.isclose(_last_value(out, "600000", "price_rank_20d"), 0.0, rel_tol=1e-12)
+    assert math.isclose(_last_value(out, "300001", "price_rank_20d"), 0.5, rel_tol=1e-12)
 
 
 def test_unknown_factor_raises(factor_lab, build_bars):

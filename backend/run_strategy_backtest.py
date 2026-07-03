@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional JSON file containing a list of strategy parameter dicts.",
     )
+    parser.add_argument(
+        "--include-curves",
+        action="store_true",
+        help="Include equity and benchmark curves in each run output.",
+    )
     parser.add_argument("--output", type=Path, default=Path("strategy-backtest-result.json"))
     return parser.parse_args()
 
@@ -167,15 +172,17 @@ def run_backtests(args: argparse.Namespace) -> dict[str, Any]:
                 params=params,
             ),
         )
-        runs.append(
-            {
-                "run_index": index,
-                "parameters": params,
-                "metrics": result.metrics,
-                "trade_stats": _trade_stats(result.trades, args.initial_cash),
-                "timing_seconds": round(time.time() - run_started_at, 3),
-            }
-        )
+        run = {
+            "run_index": index,
+            "parameters": params,
+            "metrics": result.metrics,
+            "trade_stats": _trade_stats(result.trades, args.initial_cash),
+            "timing_seconds": round(time.time() - run_started_at, 3),
+        }
+        if args.include_curves:
+            run["equity_curve"] = _json_safe_points(result.equity_curve)
+            run["benchmark_curve"] = _json_safe_points(result.benchmark_curve)
+        runs.append(run)
 
     runs.sort(
         key=lambda item: (
@@ -212,6 +219,17 @@ def run_backtests(args: argparse.Namespace) -> dict[str, Any]:
         },
         "runs": runs,
     }
+
+
+def _json_safe_points(points: list[dict]) -> list[dict]:
+    safe: list[dict] = []
+    for point in points:
+        safe_point = dict(point)
+        trade_date = safe_point.get("trade_date")
+        if hasattr(trade_date, "isoformat"):
+            safe_point["trade_date"] = trade_date.isoformat()
+        safe.append(safe_point)
+    return safe
 
 
 def main() -> int:

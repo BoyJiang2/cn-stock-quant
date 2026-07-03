@@ -12,9 +12,10 @@ Tables
 * :class:`SecurityName`          -- security name history (with ST/*ST prefix)
 * :class:`IndexConstituent`      -- index membership intervals (CSI semi-annual)
 * :class:`IndexWeightSnapshot`   -- index weight snapshots (per rebalance date)
+* :class:`SecurityTradeGap`      -- per-date suspension / provider-gap audit rows
 * :class:`ResearchPoolMember`    -- materialised PIT research universe for audit
 
-All five tables are *additive* — the existing ``stocks`` / ``daily_bars`` /
+All PIT tables are *additive* — the existing ``stocks`` / ``daily_bars`` /
 ``index_daily_bars`` / ``trading_calendar`` schemas in
 :mod:`app.models.entities` are intentionally left untouched so the legacy
 "current snapshot" path keeps working while the PIT path is being built.
@@ -47,10 +48,12 @@ __all__ = [
     "SecurityName",
     "IndexConstituent",
     "IndexWeightSnapshot",
+    "SecurityTradeGap",
     "ResearchPoolMember",
     "PIT_SECURITY_STATUSES",
     "PIT_CONFIDENCE_LEVELS",
     "PIT_ST_POLICIES",
+    "PIT_TRADE_GAP_TYPES",
 ]
 
 # Canonical security-status vocabulary.  ``listed``/``normal`` are used
@@ -69,6 +72,18 @@ PIT_CONFIDENCE_LEVELS: frozenset[str] = frozenset({"high", "medium", "low"})
 # Allowed values for the ST policy parameter on PIT universe queries.
 PIT_ST_POLICIES: frozenset[str] = frozenset(
     {"exclude_known", "include_unknown", "strict"}
+)
+
+PIT_TRADE_GAP_TYPES: frozenset[str] = frozenset(
+    {
+        "normal",
+        "suspended",
+        "limit_halt",
+        "new_listing_gap",
+        "delisted_gap",
+        "provider_gap",
+        "unknown",
+    }
 )
 
 # Sentinel used in queries to compare against ``valid_to`` NULLs without
@@ -194,6 +209,32 @@ class IndexWeightSnapshot(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class SecurityTradeGap(Base):
+    """Per-symbol trading availability audit row.
+
+    This table separates legitimate non-trading dates from provider data
+    holes.  It is intentionally one row per ``(symbol, trade_date)`` so
+    downstream ML and backtest code can join it as a read-only
+    tradability/degradation filter without inferring gap reasons from
+    missing bars.
+    """
+
+    __tablename__ = "security_trade_gap"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_sec_gap_symbol_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    expected_open: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    has_bar: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    gap_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(8), nullable=False, default="high")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class ResearchPoolMember(Base):

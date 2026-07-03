@@ -4,6 +4,7 @@ from app.models.entities import (
     Base,
     DailyBar,
     IndexDailyBar,
+    NewsItem,
     Stock,
     SyncJob,
     TradeRecord,
@@ -15,6 +16,7 @@ from app.models.pit import (
     ResearchPoolMember,
     SecurityName,
     SecurityStatus,
+    SecurityTradeGap,
 )
 
 __all__ = [
@@ -25,9 +27,11 @@ __all__ = [
     "IndexConstituent",
     "IndexDailyBar",
     "IndexWeightSnapshot",
+    "NewsItem",
     "ResearchPoolMember",
     "SecurityName",
     "SecurityStatus",
+    "SecurityTradeGap",
     "Stock",
     "SyncJob",
     "TradeRecord",

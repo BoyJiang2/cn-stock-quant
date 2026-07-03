@@ -7,7 +7,7 @@ in-memory SQLite database injected via FastAPI's ``dependency_overrides``.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 from fastapi.testclient import TestClient
@@ -17,7 +17,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import Base, DailyBar, IndexDailyBar, Stock
+from app.models.entities import Base, DailyBar, IndexDailyBar, NewsItem, Stock
 from app.models.pit import SecurityStatus
 from app.schemas.backtest import BacktestRequest
 
@@ -117,6 +117,41 @@ def _seed_index_bars(
         session.close()
 
 
+def _seed_news_item(
+    session_factory: sessionmaker,
+    symbol: str,
+    *,
+    published_at: datetime,
+    fetched_at: datetime,
+    event_type: str = "negative_news",
+    sentiment_label: str = "negative",
+    sentiment_score: float = -0.8,
+    relevance_score: float = 1.0,
+) -> None:
+    session = session_factory()
+    try:
+        session.add(
+            NewsItem(
+                source="test_news",
+                source_id=f"{symbol}-{published_at.isoformat()}",
+                symbol=symbol,
+                title="negative test news",
+                body="body",
+                url="",
+                event_type=event_type,
+                sentiment_label=sentiment_label,
+                sentiment_score=sentiment_score,
+                relevance_score=relevance_score,
+                published_at=published_at,
+                fetched_at=fetched_at,
+                raw="{}",
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+
 # ---------------------------------------------------------------------------
 # POST /api/backtests/run -- manual symbol source
 # ---------------------------------------------------------------------------
@@ -150,6 +185,156 @@ def test_run_backtest_manual_returns_symbol_source_and_selected_symbols():
     assert body["run_id"] is not None
     assert body["metrics"]["final_equity"] > 0
     assert len(body["equity_curve"]) > 0
+
+
+def test_run_backtest_manual_accepts_stock_name():
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "002156", "通富微电", "SZ")
+    _seed_daily_bars(session_factory, "002156", date(2024, 1, 1), date(2024, 2, 15))
+    client = _client_with(session_factory)
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "moving_average",
+            "symbol_source": "manual",
+            "symbols": ["通富微电"],
+            "benchmark_symbol": None,
+            "start_date": "2024-01-01",
+            "end_date": "2024-02-15",
+            "fast_window": 5,
+            "slow_window": 20,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected_symbols"] == ["002156"]
+
+
+def test_run_backtest_strategy_parameter_error_returns_400():
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "002156", "通富微电", "SZ")
+    _seed_daily_bars(session_factory, "002156", date(2024, 1, 1), date(2024, 2, 15))
+    client = _client_with(session_factory)
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "ml_score_rank",
+            "symbol_source": "manual",
+            "symbols": ["通富微电"],
+            "benchmark_symbol": None,
+            "start_date": "2024-01-01",
+            "end_date": "2024-02-15",
+            "parameters": {"scores_path": ""},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "scores_path is required" in response.json()["detail"]
+
+
+def test_run_backtest_ml_score_rank_uses_db_negative_news(tmp_path):
+    session_factory = _make_session_factory()
+    for symbol in ("000001", "000002"):
+        _seed_stock(session_factory, symbol, f"Stock {symbol}", "SZ")
+        _seed_daily_bars(session_factory, symbol, date(2024, 1, 1), date(2024, 1, 25))
+    _seed_news_item(
+        session_factory,
+        "000001",
+        published_at=datetime(2024, 1, 4, 15, 0),
+        fetched_at=datetime(2024, 1, 4, 15, 10),
+    )
+    scores_path = tmp_path / "scores.csv"
+    scores_path.write_text(
+        "\n".join(
+            ["trade_date,symbol,score"]
+            + [
+                f"2024-01-{day:02d},000001,0.90\n2024-01-{day:02d},000002,0.70"
+                for day in range(1, 26)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    client = _client_with(session_factory)
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "ml_score_rank",
+            "symbol_source": "manual",
+            "symbols": ["000001", "000002"],
+            "benchmark_symbol": None,
+            "start_date": "2024-01-05",
+            "end_date": "2024-01-25",
+            "parameters": {
+                "scores_path": str(scores_path),
+                "top_n": 1,
+                "max_position_weight": 0.5,
+                "max_total_weight": 0.5,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+                "use_db_negative_news": True,
+                "negative_news_lookback_days": 30,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    trades = response.json()["trades"]
+    assert not any(trade["symbol"] == "000001" and trade["side"] == "buy" for trade in trades)
+    assert any(trade["symbol"] == "000002" and trade["side"] == "buy" for trade in trades)
+
+
+def test_run_backtest_ml_score_rank_ignores_db_news_when_disabled(tmp_path):
+    session_factory = _make_session_factory()
+    for symbol in ("000001", "000002"):
+        _seed_stock(session_factory, symbol, f"Stock {symbol}", "SZ")
+        _seed_daily_bars(session_factory, symbol, date(2024, 1, 1), date(2024, 1, 25))
+    _seed_news_item(
+        session_factory,
+        "000001",
+        published_at=datetime(2024, 1, 4, 15, 0),
+        fetched_at=datetime(2024, 1, 4, 15, 10),
+    )
+    scores_path = tmp_path / "scores.csv"
+    scores_path.write_text(
+        "\n".join(
+            ["trade_date,symbol,score"]
+            + [
+                f"2024-01-{day:02d},000001,0.90\n2024-01-{day:02d},000002,0.70"
+                for day in range(1, 26)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    client = _client_with(session_factory)
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "ml_score_rank",
+            "symbol_source": "manual",
+            "symbols": ["000001", "000002"],
+            "benchmark_symbol": None,
+            "start_date": "2024-01-05",
+            "end_date": "2024-01-25",
+            "parameters": {
+                "scores_path": str(scores_path),
+                "top_n": 1,
+                "max_position_weight": 0.5,
+                "max_total_weight": 0.5,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+                "use_db_negative_news": False,
+                "negative_news_lookback_days": 3,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    trades = response.json()["trades"]
+    assert any(trade["symbol"] == "000001" and trade["side"] == "buy" for trade in trades)
 
 
 def test_run_backtest_manual_defaults_symbol_source_to_manual():

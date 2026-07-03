@@ -24,6 +24,7 @@ class StrategyContext:
     positions: dict[str, int] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     benchmark_history: pd.DataFrame | None = None
+    news_history: pd.DataFrame | None = None
 
 
 class Strategy:

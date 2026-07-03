@@ -55,11 +55,13 @@ from app.models.pit import (
     PIT_CONFIDENCE_LEVELS,
     PIT_SECURITY_STATUSES,
     PIT_ST_POLICIES,
+    PIT_TRADE_GAP_TYPES,
     IndexConstituent,
     IndexWeightSnapshot,
     ResearchPoolMember,
     SecurityName,
     SecurityStatus,
+    SecurityTradeGap,
 )
 
 __all__ = [
@@ -68,6 +70,7 @@ __all__ = [
     "PitNameRecord",
     "PitRepository",
     "PitSecurityStatus",
+    "SecurityTradeGapRecord",
     "PitUniverseResult",
     "MarketDataRepositoryLike",
 ]
@@ -123,6 +126,19 @@ class IndexMember:
     announced_at: date | None
     confidence: str
     source: str
+
+
+@dataclass(frozen=True)
+class SecurityTradeGapRecord:
+    """PIT trade-gap row for one symbol and trade date."""
+
+    symbol: str
+    trade_date: date
+    expected_open: bool
+    has_bar: bool
+    gap_type: str
+    source: str
+    confidence: str
 
 
 @dataclass
@@ -496,6 +512,53 @@ class PitRepository:
         self.session.commit()
         return count
 
+    def upsert_security_trade_gap(self, rows: Iterable[dict[str, Any]]) -> int:
+        """Insert or replace :class:`SecurityTradeGap` rows.
+
+        Each row represents the observed availability of one symbol on
+        one exchange trading date.  ``gap_type="normal"`` is valid when
+        ``expected_open`` and ``has_bar`` are both true; provider gaps
+        and suspensions are stored explicitly so callers do not infer
+        them from missing OHLCV rows.
+        """
+        count = 0
+        normalized_rows = _deduplicate_rows(
+            rows,
+            lambda row: (
+                normalize_a_share_symbol(row["symbol"]),
+                _coerce_date(row["trade_date"]),
+            ),
+        )
+        for row in normalized_rows:
+            symbol = normalize_a_share_symbol(row["symbol"])
+            trade_date = _coerce_date(row["trade_date"])
+            gap_type = str(row.get("gap_type", "unknown")).strip().lower()
+            if gap_type not in PIT_TRADE_GAP_TYPES:
+                raise ValueError(f"unknown trade gap type: {gap_type!r}")
+            confidence = str(row.get("confidence", "high")).strip().lower()
+            if confidence not in PIT_CONFIDENCE_LEVELS:
+                raise ValueError(f"unknown confidence: {confidence!r}")
+            self.session.execute(
+                SecurityTradeGap.__table__.delete().where(
+                    SecurityTradeGap.symbol == symbol,
+                    SecurityTradeGap.trade_date == trade_date,
+                )
+            )
+            self.session.add(
+                SecurityTradeGap(
+                    symbol=symbol,
+                    trade_date=trade_date,
+                    expected_open=bool(row["expected_open"]),
+                    has_bar=bool(row["has_bar"]),
+                    gap_type=gap_type,
+                    source=str(row.get("source", "unknown")),
+                    confidence=confidence,
+                )
+            )
+            count += 1
+        self.session.commit()
+        return count
+
     # ------------------------------------------------------------------
     # Status / name PIT queries
     # ------------------------------------------------------------------
@@ -651,6 +714,35 @@ class PitRepository:
         )
         value = self.session.scalar(stmt)
         return float(value) if value is not None else None
+
+    def trade_gap_as_of(
+        self, symbol: str, as_of: date
+    ) -> SecurityTradeGapRecord | None:
+        """Return the trade-gap row for *symbol* on *as_of*, if present."""
+        symbol = normalize_a_share_symbol(symbol)
+        row = self.session.scalar(
+            select(SecurityTradeGap).where(
+                SecurityTradeGap.symbol == symbol,
+                SecurityTradeGap.trade_date == as_of,
+            )
+        )
+        return _trade_gap_record(row) if row is not None else None
+
+    def trade_gaps_between(
+        self, symbol: str, start_date: date, end_date: date
+    ) -> list[SecurityTradeGapRecord]:
+        """Return trade-gap rows for *symbol* ordered by trade date."""
+        symbol = normalize_a_share_symbol(symbol)
+        stmt = (
+            select(SecurityTradeGap)
+            .where(
+                SecurityTradeGap.symbol == symbol,
+                SecurityTradeGap.trade_date >= start_date,
+                SecurityTradeGap.trade_date <= end_date,
+            )
+            .order_by(SecurityTradeGap.trade_date)
+        )
+        return [_trade_gap_record(row) for row in self.session.scalars(stmt)]
 
     # ------------------------------------------------------------------
     # Universe build
@@ -945,6 +1037,17 @@ class PitRepository:
         weight_rows = int(
             self.session.scalar(select(func.count(IndexWeightSnapshot.id))) or 0
         )
+        trade_gap_rows = int(
+            self.session.scalar(select(func.count(SecurityTradeGap.id))) or 0
+        )
+        provider_gap_rows = int(
+            self.session.scalar(
+                select(func.count(SecurityTradeGap.id)).where(
+                    SecurityTradeGap.gap_type == "provider_gap"
+                )
+            )
+            or 0
+        )
         return {
             "security_status_rows": status_rows,
             "security_name_rows": name_rows,
@@ -952,6 +1055,8 @@ class PitRepository:
             "name_missing_announced_at": name_missing_announced,
             "index_constituent_rows": index_const_rows,
             "index_weight_snapshot_rows": weight_rows,
+            "security_trade_gap_rows": trade_gap_rows,
+            "provider_gap_rows": provider_gap_rows,
             "pit_ready": status_rows > 0 or name_rows > 0,
         }
 
@@ -1141,3 +1246,15 @@ def _deduplicate_rows(rows: Iterable[dict[str, Any]], key_builder) -> list[dict[
     for row in rows:
         deduplicated[key_builder(row)] = dict(row)
     return list(deduplicated.values())
+
+
+def _trade_gap_record(row: SecurityTradeGap) -> SecurityTradeGapRecord:
+    return SecurityTradeGapRecord(
+        symbol=row.symbol,
+        trade_date=row.trade_date,
+        expected_open=row.expected_open,
+        has_bar=row.has_bar,
+        gap_type=row.gap_type,
+        source=row.source,
+        confidence=row.confidence,
+    )

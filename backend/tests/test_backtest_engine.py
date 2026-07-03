@@ -52,6 +52,18 @@ class BenchmarkRecordingStrategy(Strategy):
         return {symbol: 0.0 for symbol in history["symbol"].unique()}
 
 
+class NewsRecordingStrategy(Strategy):
+    def __init__(self):
+        self.news_ids_by_date: list[list[str]] = []
+
+    def generate_target_weights(self, context: StrategyContext, history: pd.DataFrame) -> dict[str, float]:
+        news = context.news_history
+        self.news_ids_by_date.append(
+            news["source_id"].tolist() if news is not None else []
+        )
+        return {symbol: 0.0 for symbol in history["symbol"].unique()}
+
+
 def test_moving_average_backtest_runs():
     start = date(2024, 1, 1)
     bars = pd.DataFrame(
@@ -109,6 +121,59 @@ def test_signal_generated_today_executes_next_trading_day():
 
     assert result.trades[0]["side"] == "buy"
     assert result.trades[0]["trade_date"] == start + timedelta(days=1)
+
+
+def test_news_history_is_filtered_by_known_at_without_future_leakage():
+    start = date(2024, 1, 1)
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "trade_date": start + timedelta(days=i),
+                "open": 10,
+                "high": 10,
+                "low": 10,
+                "close": 10,
+                "volume": 100000,
+                "amount": 1000000,
+            }
+            for i in range(3)
+        ]
+    )
+    news = pd.DataFrame(
+        [
+            {
+                "source_id": "known-day-1",
+                "symbol": "000001",
+                "published_at": "2024-01-01 10:00:00",
+                "fetched_at": "2024-01-01 10:05:00",
+            },
+            {
+                "source_id": "future-day-3",
+                "symbol": "000001",
+                "published_at": "2024-01-03 10:00:00",
+                "fetched_at": "2024-01-03 10:05:00",
+            },
+        ]
+    )
+    strategy = NewsRecordingStrategy()
+
+    DailyBacktestEngine().run(
+        strategy=strategy,
+        bars=bars,
+        config=BacktestConfig(
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            initial_cash=100000,
+            news_history=news,
+        ),
+    )
+
+    assert strategy.news_ids_by_date == [
+        ["known-day-1"],
+        ["known-day-1"],
+        ["known-day-1", "future-day-3"],
+    ]
 
 
 def test_buy_execution_respects_minimum_commission_cash_constraint():

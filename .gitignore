@@ -12,6 +12,8 @@ data/*.db
 data/*.sqlite
 data/*.duckdb
 backend/.env
+backend/artifacts/
+backend/research_runs/
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local

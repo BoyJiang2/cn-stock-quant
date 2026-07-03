@@ -11,7 +11,6 @@ from app.data.repository import MarketDataRepository
 from app.data.symbols import (
     INDEX_SYMBOL_WHITELIST,
     normalize_a_share_symbol,
-    normalize_a_share_symbols,
 )
 from app.factors import FactorLab, FactorSpec, evaluate, forward_returns
 from app.schemas.ai_research import (
@@ -117,7 +116,7 @@ def evaluate_candidate(
         )
     else:
         try:
-            symbols = normalize_a_share_symbols(payload.symbols)
+            symbols = repository.resolve_symbols(payload.symbols)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not symbols:

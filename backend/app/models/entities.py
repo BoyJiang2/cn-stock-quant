@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -57,6 +57,29 @@ class TradingCalendar(Base):
 
     trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
     is_open: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class NewsItem(Base):
+    __tablename__ = "news_items"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_news_item_source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    source_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(String(1000), default="")
+    event_type: Mapped[str] = mapped_column(String(64), default="")
+    sentiment_label: Mapped[str] = mapped_column(String(32), default="")
+    sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, index=True, default=datetime.utcnow)
+    raw: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

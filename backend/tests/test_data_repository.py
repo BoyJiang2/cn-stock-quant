@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 from sqlalchemy import create_engine
@@ -28,6 +28,21 @@ def test_repository_normalizes_stock_symbols_and_searches_aliases():
 
     assert len(stocks) == 1
     assert stocks[0].symbol == "000001"
+
+
+def test_repository_resolves_stock_name_to_symbol():
+    repository = make_repository()
+    repository.upsert_stocks(
+        pd.DataFrame(
+            [
+                {"symbol": "002156", "name": "通富微电", "exchange": "SZ", "status": "active"},
+            ]
+        )
+    )
+
+    assert repository.resolve_symbol("通富微电") == "002156"
+    assert repository.resolve_symbol("SZ002156") == "002156"
+    assert repository.resolve_symbols(["通富微电", "002156"]) == ["002156"]
 
 
 def test_repository_keeps_partial_numeric_search_as_substring():
@@ -275,6 +290,88 @@ def test_market_data_overview_reports_database_coverage():
         "start_date": date(2024, 1, 2),
         "end_date": date(2024, 1, 2),
     }
+
+
+def test_repository_upserts_and_queries_news_items():
+    repository = make_repository()
+    repository.upsert_news_items(
+        pd.DataFrame(
+            [
+                {
+                    "source": "eastmoney_stock_news",
+                    "source_id": "em-1",
+                    "symbol": "SZ000001",
+                    "title": "Ping An Bank news",
+                    "body": "body",
+                    "url": "https://example.com/news/1",
+                    "event_type": "news",
+                    "sentiment_label": "neutral",
+                    "sentiment_score": 0.0,
+                    "relevance_score": 0.9,
+                    "published_at": datetime(2024, 1, 2, 9, 30),
+                    "fetched_at": datetime(2024, 1, 2, 9, 35),
+                    "raw": {"id": 1},
+                }
+            ]
+        )
+    )
+    repository.upsert_news_items(
+        pd.DataFrame(
+            [
+                {
+                    "source": "eastmoney_stock_news",
+                    "source_id": "em-1",
+                    "symbol": "000001",
+                    "title": "Updated title",
+                    "published_at": datetime(2024, 1, 2, 9, 30),
+                    "fetched_at": datetime(2024, 1, 2, 9, 40),
+                },
+                {
+                    "source": "cninfo_announcement",
+                    "source_id": "cn-1",
+                    "symbol": "600000",
+                    "title": "SPDB announcement",
+                    "published_at": datetime(2024, 1, 3, 18, 0),
+                    "fetched_at": datetime(2024, 1, 3, 18, 5),
+                },
+            ]
+        )
+    )
+
+    pingan = repository.news_items(symbol="000001", limit=10)
+    all_items = repository.news_items(
+        start_at=datetime(2024, 1, 1),
+        end_at=datetime(2024, 1, 4),
+        limit=10,
+    )
+
+    assert len(pingan) == 1
+    assert pingan.iloc[0]["source_id"] == "em-1"
+    assert pingan.iloc[0]["symbol"] == "000001"
+    assert pingan.iloc[0]["title"] == "Updated title"
+    assert len(all_items) == 2
+
+
+def test_repository_rejects_news_items_without_required_timestamps():
+    repository = make_repository()
+
+    try:
+        repository.upsert_news_items(
+            pd.DataFrame(
+                [
+                    {
+                        "source": "eastmoney_stock_news",
+                        "source_id": "em-1",
+                        "title": "missing fetched_at",
+                        "published_at": datetime(2024, 1, 2, 9, 30),
+                    }
+                ]
+            )
+        )
+    except ValueError as exc:
+        assert "fetched_at" in str(exc)
+    else:
+        raise AssertionError("missing fetched_at should fail")
 
 
 def test_research_sync_candidates_exclude_risk_names_and_covered_symbols():

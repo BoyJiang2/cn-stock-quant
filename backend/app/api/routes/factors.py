@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.data.repository import MarketDataRepository
-from app.data.symbols import normalize_a_share_symbols
 from app.factors import (
     BUILTIN_FACTOR_NAMES,
     FACTOR_DIRECTIONS,
@@ -123,7 +122,7 @@ def run_factor_experiment(
         )
     else:
         try:
-            symbols = normalize_a_share_symbols(payload.symbols)
+            symbols = repository.resolve_symbols(payload.symbols)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not symbols:

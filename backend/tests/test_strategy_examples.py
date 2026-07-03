@@ -6,7 +6,9 @@ from app.strategy.base import StrategyContext
 from app.strategy.examples import (
     BUILTIN_STRATEGIES,
     InverseMomentumStrategy,
+    MLScoreRankStrategy,
     MomentumRankStrategy,
+    MultiFactorRankStrategy,
     StableReversalStrategy,
 )
 
@@ -249,6 +251,236 @@ def test_inverse_momentum_filters_crowded_amount_spikes_and_holds_buffered_posit
     assert weights["WEAKEST"] == 0.0
     assert weights["HELD"] == 0.3
     assert weights["SPIKE"] == 0.0
+
+
+def test_ml_score_rank_selects_current_date_scores_and_normalises_symbols(tmp_path):
+    start = date(2024, 1, 1)
+    score_path = tmp_path / "scores.csv"
+    score_path.write_text(
+        "\n".join(
+            [
+                "trade_date,symbol,score",
+                "2024-01-02,1,0.90",
+                "2024-01-02,600000,0.80",
+                "2024-01-01,300001,9.99",
+                "2024-01-02,300001,0.70",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "trade_date": start + timedelta(days=i),
+                "open": 10 + i,
+                "high": 10 + i,
+                "low": 10 + i,
+                "close": 10 + i,
+                "volume": 100_000,
+                "amount": 100_000_000,
+            }
+            for i in range(2)
+            for symbol in ["000001", "600000", "300001"]
+        ]
+    )
+
+    weights = MLScoreRankStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=start + timedelta(days=1),
+            cash=100_000,
+            params={
+                "scores_path": str(score_path),
+                "top_n": 2,
+                "max_position_weight": 0.3,
+                "max_total_weight": 0.4,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+            },
+        ),
+        bars,
+    )
+
+    assert weights["000001"] == 0.2
+    assert weights["600000"] == 0.2
+    assert weights["300001"] == 0.0
+
+
+def test_ml_score_rank_returns_zero_when_current_date_has_no_scores(tmp_path):
+    start = date(2024, 1, 1)
+    score_path = tmp_path / "scores.csv"
+    score_path.write_text("trade_date,symbol,score\n2024-01-01,000001,1.0\n", encoding="utf-8")
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "trade_date": start + timedelta(days=i),
+                "open": 10 + i,
+                "high": 10 + i,
+                "low": 10 + i,
+                "close": 10 + i,
+                "volume": 100_000,
+                "amount": 100_000_000,
+            }
+            for i in range(2)
+        ]
+    )
+
+    weights = MLScoreRankStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=start + timedelta(days=1),
+            cash=100_000,
+            params={"scores_path": str(score_path), "min_avg_amount_20d": 0},
+        ),
+        bars,
+    )
+
+    assert weights == {"000001": 0.0}
+
+
+def test_ml_score_rank_metadata_prefills_available_scores_path():
+    metadata = MLScoreRankStrategy.metadata()
+    scores_param = next(
+        item for item in metadata["parameters"] if item["name"] == "scores_path"
+    )
+
+    default = scores_param["default"]
+    if default:
+        assert default.endswith("-predictions.csv")
+
+
+def test_ml_score_rank_can_filter_trade_gap_and_negative_news(tmp_path):
+    start = date(2024, 1, 1)
+    score_path = tmp_path / "scores.csv"
+    score_path.write_text(
+        "\n".join(
+            [
+                "trade_date,symbol,score",
+                "2024-01-02,000001,0.90",
+                "2024-01-02,000002,0.80",
+                "2024-01-02,000003,0.70",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    gap_path = tmp_path / "gaps.csv"
+    gap_path.write_text(
+        "trade_date,symbol,gap_type\n2024-01-02,000001,suspended\n",
+        encoding="utf-8",
+    )
+    news_path = tmp_path / "news.csv"
+    news_path.write_text(
+        "\n".join(
+            [
+                "symbol,published_at,fetched_at,sentiment_label,sentiment_score,relevance_score",
+                "000002,2024-01-02T09:00:00,2024-01-02T09:01:00,negative,-0.8,1.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "trade_date": start + timedelta(days=i),
+                "open": 10 + i,
+                "high": 10 + i,
+                "low": 10 + i,
+                "close": 10 + i,
+                "volume": 100_000,
+                "amount": 100_000_000,
+            }
+            for i in range(2)
+            for symbol in ["000001", "000002", "000003"]
+        ]
+    )
+
+    weights = MLScoreRankStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=start + timedelta(days=1),
+            cash=100_000,
+            params={
+                "scores_path": str(score_path),
+                "trade_gap_path": str(gap_path),
+                "negative_news_path": str(news_path),
+                "top_n": 3,
+                "max_position_weight": 0.5,
+                "max_total_weight": 0.9,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+            },
+        ),
+        bars,
+    )
+
+    assert weights["000001"] == 0.0
+    assert weights["000002"] == 0.0
+    assert weights["000003"] == 0.5
+
+
+def test_ml_score_rank_can_filter_database_negative_news(tmp_path):
+    current = date(2024, 1, 5)
+    score_path = tmp_path / "scores.csv"
+    score_path.write_text(
+        "\n".join(
+            [
+                "trade_date,symbol,score",
+                "2024-01-05,000001,0.90",
+                "2024-01-05,000002,0.70",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    news = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "published_at": "2024-01-04 15:00:00",
+                "fetched_at": "2024-01-04 15:10:00",
+                "event_type": "risk_news",
+                "sentiment_label": "risk",
+                "sentiment_score": -0.4,
+                "relevance_score": 1.0,
+            }
+        ]
+    )
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "trade_date": current,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 100_000,
+                "amount": 100_000_000,
+            }
+            for symbol in ["000001", "000002"]
+        ]
+    )
+
+    weights = MLScoreRankStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=current,
+            cash=100_000,
+            params={
+                "scores_path": str(score_path),
+                "top_n": 1,
+                "max_position_weight": 0.5,
+                "max_total_weight": 0.5,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+                "use_db_negative_news": True,
+                "negative_news_lookback_days": 3,
+            },
+            news_history=news,
+        ),
+        bars,
+    )
+
+    assert weights["000001"] == 0.0
+    assert weights["000002"] == 0.5
 
 
 def test_stable_reversal_selects_stable_oversold_liquid_symbols():
@@ -508,3 +740,100 @@ def test_inverse_momentum_registered_as_builtin_strategy():
         "hold_rank_multiplier",
         "top_n",
     }
+
+
+def test_multi_factor_rank_selects_balanced_candidate_and_respects_buffer():
+    start = date(2024, 1, 1)
+    rows = []
+    for i in range(70):
+        for symbol, close, amount in [
+            ("BEST", 30 - i * 0.12 if i < 60 else 22.8 - (i - 60) * 0.03, 100_000_000 + (i % 2) * 1_000_000),
+            ("HELD", 30 - i * 0.10 if i < 60 else 24.0 - (i - 60) * 0.02, 100_000_000 + (i % 3) * 1_000_000),
+            ("CROWDED", 30 - i * 0.15 if i < 60 else 21.0 - (i - 60) * 0.03, 100_000_000 if i < 66 else 500_000_000),
+            ("STRONG", 10 + i * 0.2, 100_000_000 + (i % 2) * 1_000_000),
+            ("ILLIQUID", 30 - i * 0.15, 1_000_000),
+        ]:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "trade_date": start + timedelta(days=i),
+                    "open": close,
+                    "high": close * 1.01,
+                    "low": close * 0.99,
+                    "close": close,
+                    "volume": 100_000,
+                    "amount": amount,
+                }
+            )
+    bars = pd.DataFrame(rows)
+
+    weights = MultiFactorRankStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=start + timedelta(days=69),
+            cash=100_000,
+            positions={"HELD": 100},
+            params={
+                "top_n": 1,
+                "max_position_weight": 0.5,
+                "max_total_weight": 0.3,
+                "min_avg_amount_20d": 50_000_000,
+                "min_price": 1.0,
+                "max_amount_ratio": 1.2,
+                "hold_rank_multiplier": 3.0,
+            },
+        ),
+        bars,
+    )
+
+    assert weights["HELD"] == 0.3
+    assert weights["BEST"] == 0.0
+    assert weights["CROWDED"] == 0.0
+    assert weights["STRONG"] == 0.0
+    assert weights["ILLIQUID"] == 0.0
+
+
+def test_multi_factor_rank_registered_as_builtin_strategy():
+    assert BUILTIN_STRATEGIES["multi_factor_rank"] is MultiFactorRankStrategy
+    metadata = MultiFactorRankStrategy.metadata()
+    assert metadata["name"] == "multi_factor_rank"
+    assert {param["name"] for param in metadata["parameters"]} >= {
+        "amount_vol_weight",
+        "low_vol_reversal_weight",
+        "inverse_momentum_weight",
+        "hold_rank_multiplier",
+        "entry_rank_multiplier",
+        "top_n",
+    }
+
+
+def test_multi_factor_rank_rejects_invalid_entry_rank_buffer():
+    start = date(2024, 1, 1)
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": "ONLY",
+                "trade_date": start + timedelta(days=i),
+                "open": 10.0,
+                "high": 10.1,
+                "low": 9.9,
+                "close": 10.0,
+                "volume": 100_000,
+                "amount": 100_000_000 + (i % 2) * 1_000_000,
+            }
+            for i in range(70)
+        ]
+    )
+
+    try:
+        MultiFactorRankStrategy().generate_target_weights(
+            StrategyContext(
+                current_date=start + timedelta(days=69),
+                cash=100_000,
+                params={"entry_rank_multiplier": 0.9},
+            ),
+            bars,
+        )
+    except ValueError as exc:
+        assert "entry_rank_multiplier" in str(exc)
+    else:
+        raise AssertionError("entry_rank_multiplier below 1 should fail")

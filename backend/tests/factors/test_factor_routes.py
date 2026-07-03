@@ -105,6 +105,30 @@ def test_factor_experiment_runs_and_returns_json_safe_summary():
     assert all(summary["n_dates"] >= 0 for summary in body["summaries"])
 
 
+def test_factor_experiment_accepts_stock_name_in_manual_symbols():
+    response = _client().post(
+        "/api/factors/experiments/run",
+        json={
+            "symbol_source": "manual",
+            "symbols": ["Stock 000001", "000002", "000003", "000004", "000005"],
+            "factor_names": ["momentum_5d"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-03-20",
+            "horizon": 5,
+            "n_groups": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected_symbols"] == [
+        "000001",
+        "000002",
+        "000003",
+        "000004",
+        "000005",
+    ]
+
+
 def test_factor_experiment_rejects_unknown_factor():
     response = _client().post(
         "/api/factors/experiments/run",

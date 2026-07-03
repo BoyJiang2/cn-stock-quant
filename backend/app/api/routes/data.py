@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_session
+from app.data.akshare_news_provider import AkShareNewsProvider
 from app.data.akshare_provider import AkShareProvider
 from app.data.full_market import FullMarketSyncConfig, FullMarketSyncCoordinator
 from app.data.provider import MarketDataProvider
@@ -26,6 +27,9 @@ from app.schemas.data import (
     CalendarSyncResponse,
     FullMarketSyncRequest,
     FullMarketSyncResponse,
+    NewsItemOut,
+    NewsSyncRequest,
+    NewsSyncResponse,
     ResearchSyncNextRequest,
     ResearchSyncNextResponse,
     ResearchSyncProgressOut,
@@ -54,6 +58,10 @@ def _database_identifier() -> str:
     host = parsed.hostname or ""
     path = parsed.path or ""
     return f"{parsed.scheme}://{host}{path}"
+
+
+def _datetime_to_date(value: datetime | None) -> date | None:
+    return value.date() if value is not None else None
 
 
 @router.post("/sync/stocks")
@@ -93,7 +101,7 @@ def sync_daily(payload: DailySyncRequest, session: Session = Depends(get_session
     provider = AkShareProvider()
     repository = MarketDataRepository(session)
     try:
-        symbol = normalize_a_share_symbol(payload.symbol)
+        symbol = repository.resolve_symbol(payload.symbol)
     except ValueError as exc:
         repository.create_sync_job("daily", payload.symbol, "failed", message=str(exc), start_date=payload.start_date, end_date=payload.end_date)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -125,6 +133,62 @@ def sync_daily(payload: DailySyncRequest, session: Session = Depends(get_session
     count = repository.replace_daily_bars(symbol, payload.start_date, payload.end_date, bars)
     repository.create_sync_job("daily", symbol, "success", records=count, start_date=payload.start_date, end_date=payload.end_date)
     return DailySyncResponse(symbol=symbol, synced=count, status="success")
+
+
+@router.post("/sync/news", response_model=NewsSyncResponse)
+def sync_news(payload: NewsSyncRequest, session: Session = Depends(get_session)) -> NewsSyncResponse:
+    repository = MarketDataRepository(session)
+    try:
+        symbol = repository.resolve_symbol(payload.symbol)
+    except ValueError as exc:
+        repository.create_sync_job(
+            "news",
+            payload.symbol,
+            "failed",
+            message=str(exc),
+            start_date=_datetime_to_date(payload.start_at),
+            end_date=_datetime_to_date(payload.end_at),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    provider = AkShareNewsProvider()
+    try:
+        items = provider.stock_news(
+            symbol,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+        )
+    except Exception as exc:
+        repository.create_sync_job(
+            "news",
+            symbol,
+            "failed",
+            message=str(exc),
+            start_date=_datetime_to_date(payload.start_at),
+            end_date=_datetime_to_date(payload.end_at),
+        )
+        raise HTTPException(status_code=502, detail=f"AkShare news request failed: {exc}") from exc
+
+    if items.empty:
+        repository.create_sync_job(
+            "news",
+            symbol,
+            "empty",
+            start_date=_datetime_to_date(payload.start_at),
+            end_date=_datetime_to_date(payload.end_at),
+        )
+        return NewsSyncResponse(symbol=symbol, synced=0, status="empty", message="no news")
+
+    count = repository.upsert_news_items(items)
+    repository.create_sync_job(
+        "news",
+        symbol,
+        "success",
+        records=count,
+        start_date=_datetime_to_date(payload.start_at),
+        end_date=_datetime_to_date(payload.end_at),
+    )
+    return NewsSyncResponse(symbol=symbol, synced=count, status="success")
 
 
 @router.post("/sync/index", response_model=DailySyncResponse)
@@ -219,7 +283,7 @@ def _sync_symbol_batch(
     for raw_symbol in symbols:
         symbol: str | None = None
         try:
-            symbol = normalize_a_share_symbol(raw_symbol)
+            symbol = repository.resolve_symbol(raw_symbol)
             try:
                 bars = provider.daily_bars(symbol, start_date, end_date, adjust)
             except Exception as exc:
@@ -400,12 +464,13 @@ def list_daily(
             detail=f"start_date ({start_date}) must be <= end_date ({end_date})",
         )
 
+    repository = MarketDataRepository(session)
     try:
-        normalized_symbol = normalize_a_share_symbol(symbol)
+        normalized_symbol = repository.resolve_symbol(symbol)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    bars = MarketDataRepository(session).daily_bars(
+    bars = repository.daily_bars(
         [normalized_symbol],
         start_date,
         end_date,
@@ -436,6 +501,32 @@ def sync_jobs(limit: int = 100, session: Session = Depends(get_session)):
     ]
 
 
+@router.get("/news", response_model=list[NewsItemOut])
+def list_news(
+    symbol: str | None = None,
+    start_at: datetime | None = Query(None),
+    end_at: datetime | None = Query(None),
+    source: str | None = None,
+    limit: int = Query(200, ge=1, le=5000),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    repository = MarketDataRepository(session)
+    normalized_symbol = None
+    if symbol is not None and symbol.strip():
+        try:
+            normalized_symbol = repository.resolve_symbol(symbol)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    frame = repository.news_items(
+        symbol=normalized_symbol,
+        start_at=start_at,
+        end_at=end_at,
+        source=source,
+        limit=limit,
+    )
+    return frame.to_dict("records")
+
+
 @router.get("/diagnostics", response_model=DataDiagnosticsOut)
 def diagnostics(session: Session = Depends(get_session)):
     overview = MarketDataRepository(session).market_data_overview()
@@ -454,12 +545,13 @@ def symbol_status(
     symbol: str = Query(..., min_length=1, description="A-share symbol to diagnose"),
     session: Session = Depends(get_session),
 ):
+    repository = MarketDataRepository(session)
     try:
-        normalized_symbol = normalize_a_share_symbol(symbol)
+        normalized_symbol = repository.resolve_symbol(symbol)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    status = MarketDataRepository(session).symbol_data_status(normalized_symbol)
+    status = repository.symbol_data_status(normalized_symbol)
     return SymbolStatusOut(
         symbol=status["symbol"],
         stock_exists=status["stock_exists"],
