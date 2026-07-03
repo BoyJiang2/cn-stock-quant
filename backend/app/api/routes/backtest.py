@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 import pandas as pd
@@ -129,52 +129,13 @@ def run_backtest(payload: BacktestRequest, session: Session = Depends(get_sessio
                 status_code=400,
                 detail=f"Benchmark must be one of: {', '.join(sorted(INDEX_SYMBOL_WHITELIST))}",
             )
-        benchmark_bars = repository.index_daily_bars(benchmark_symbol, payload.start_date, payload.end_date)
-        if benchmark_bars.empty:
-            try:
-                fetched_benchmark = AkShareProvider().index_daily_bars(
-                    benchmark_symbol,
-                    payload.start_date,
-                    payload.end_date,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Benchmark {benchmark_symbol} auto-sync failed: {exc}",
-                ) from exc
-            if fetched_benchmark.empty:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Benchmark {benchmark_symbol} returned no data for the requested range.",
-                )
-            repository.replace_index_daily_bars(
-                benchmark_symbol,
-                payload.start_date,
-                payload.end_date,
-                fetched_benchmark,
-            )
-            repository.create_sync_job(
-                "index_daily",
-                benchmark_symbol,
-                "success",
-                records=len(fetched_benchmark),
-                message="auto-synced by backtest",
-                start_date=payload.start_date,
-                end_date=payload.end_date,
-            )
-            benchmark_bars = fetched_benchmark
-        strategy_dates = bars["trade_date"]
-        benchmark_dates = set(benchmark_bars["trade_date"])
-        first_strategy_date = strategy_dates.min()
-        last_strategy_date = strategy_dates.max()
-        if first_strategy_date not in benchmark_dates or last_strategy_date not in benchmark_dates:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Benchmark {benchmark_symbol} does not cover strategy trading dates "
-                    f"{first_strategy_date} through {last_strategy_date}."
-                ),
-            )
+        benchmark_bars = _ensure_benchmark_bars(
+            repository,
+            benchmark_symbol=benchmark_symbol,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            strategy_dates=bars["trade_date"],
+        )
 
     strategy_params = payload.strategy_parameters()
     news_history = _load_negative_news_history(
@@ -254,6 +215,77 @@ def _truthy(value) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _ensure_benchmark_bars(
+    repository: MarketDataRepository,
+    *,
+    benchmark_symbol: str,
+    start_date: date,
+    end_date: date,
+    strategy_dates: pd.Series,
+) -> pd.DataFrame:
+    benchmark_bars = repository.index_daily_bars(benchmark_symbol, start_date, end_date)
+    first_strategy_date = strategy_dates.min()
+    last_strategy_date = strategy_dates.max()
+    if _benchmark_covers_strategy_dates(benchmark_bars, first_strategy_date, last_strategy_date):
+        return benchmark_bars
+
+    try:
+        fetched_benchmark = AkShareProvider().index_daily_bars(
+            benchmark_symbol,
+            start_date,
+            end_date,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Benchmark {benchmark_symbol} auto-sync failed: {exc}",
+        ) from exc
+    if fetched_benchmark.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Benchmark {benchmark_symbol} returned no data for the requested range.",
+        )
+
+    repository.replace_index_daily_bars(
+        benchmark_symbol,
+        start_date,
+        end_date,
+        fetched_benchmark,
+    )
+    repository.create_sync_job(
+        "index_daily",
+        benchmark_symbol,
+        "success",
+        records=len(fetched_benchmark),
+        message="auto-synced by backtest",
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    benchmark_bars = repository.index_daily_bars(benchmark_symbol, start_date, end_date)
+    if _benchmark_covers_strategy_dates(benchmark_bars, first_strategy_date, last_strategy_date):
+        return benchmark_bars
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Benchmark {benchmark_symbol} does not cover strategy trading dates "
+            f"{first_strategy_date} through {last_strategy_date} after auto-sync."
+        ),
+    )
+
+
+def _benchmark_covers_strategy_dates(
+    benchmark_bars: pd.DataFrame,
+    first_strategy_date: date,
+    last_strategy_date: date,
+) -> bool:
+    if benchmark_bars.empty:
+        return False
+    benchmark_dates = set(pd.to_datetime(benchmark_bars["trade_date"]).dt.date)
+    return first_strategy_date in benchmark_dates and last_strategy_date in benchmark_dates
 
 
 @router.get("", response_model=list[BacktestRunOut])

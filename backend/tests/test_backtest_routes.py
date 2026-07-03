@@ -406,6 +406,55 @@ def test_run_backtest_auto_syncs_missing_benchmark(monkeypatch):
         session.close()
 
 
+def test_run_backtest_auto_syncs_stale_benchmark(monkeypatch):
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "000001", "Ping An Bank", "SZ")
+    _seed_daily_bars(session_factory, "000001", date(2024, 1, 1), date(2024, 2, 15))
+    _seed_index_bars(session_factory, "000300", date(2024, 1, 1), date(2024, 1, 31))
+    client = _client_with(session_factory)
+
+    class FakeProvider:
+        def index_daily_bars(self, symbol, start_date, end_date):
+            dates = pd.date_range(start_date, end_date, freq="D")
+            return pd.DataFrame(
+                {
+                    "symbol": symbol,
+                    "trade_date": dates.date,
+                    "open": 3000.0,
+                    "high": 3010.0,
+                    "low": 2990.0,
+                    "close": 3005.0,
+                    "volume": 1000.0,
+                    "amount": 10000.0,
+                    "adj": "none",
+                }
+            )
+
+    monkeypatch.setattr("app.api.routes.backtest.AkShareProvider", FakeProvider)
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "moving_average",
+            "symbol_source": "manual",
+            "symbols": ["000001"],
+            "benchmark_symbol": "000300",
+            "start_date": "2024-01-01",
+            "end_date": "2024-02-15",
+            "fast_window": 5,
+            "slow_window": 20,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["benchmark_curve"][-1]["trade_date"] == "2024-02-15"
+    session = session_factory()
+    try:
+        last_date = session.query(IndexDailyBar.trade_date).filter_by(symbol="000300").order_by(IndexDailyBar.trade_date.desc()).first()[0]
+        assert last_date == date(2024, 2, 15)
+    finally:
+        session.close()
+
+
 def test_run_backtest_reports_benchmark_auto_sync_failure(monkeypatch):
     session_factory = _make_session_factory()
     _seed_stock(session_factory, "000001", "Ping An Bank", "SZ")
