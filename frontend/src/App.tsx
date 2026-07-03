@@ -1,17 +1,19 @@
-import { CandlestickChart, Database, FlaskConical, LineChart, ShieldCheck, WalletCards } from "lucide-react";
+import { CandlestickChart, Database, FlaskConical, LayoutDashboard, LineChart, ShieldCheck, WalletCards } from "lucide-react";
 import { useState } from "react";
 
 import { BacktestPage } from "./pages/BacktestPage";
 import { DataPage } from "./pages/DataPage";
+import { HomePage } from "./pages/HomePage";
 import { KlinePage } from "./pages/KlinePage";
 import { PortfolioPage } from "./pages/PortfolioPage";
 import { StrategyPage } from "./pages/StrategyPage";
 
-type PageKey = "data" | "kline" | "strategies" | "backtests" | "portfolio" | "risk";
+type PageKey = "home" | "data" | "kline" | "strategies" | "backtests" | "portfolio" | "risk";
 
 const navItems = [
+  { key: "home", label: "总览", icon: LayoutDashboard },
   { key: "data", label: "数据中心", icon: Database },
-  { key: "kline", label: "K线查看", icon: CandlestickChart },
+  { key: "kline", label: "K 线查看", icon: CandlestickChart },
   { key: "strategies", label: "策略管理", icon: FlaskConical },
   { key: "backtests", label: "回测中心", icon: LineChart },
   { key: "portfolio", label: "模拟盘", icon: WalletCards },
@@ -19,7 +21,7 @@ const navItems = [
 ] as const;
 
 function App() {
-  const [active, setActive] = useState<PageKey>("data");
+  const [active, setActive] = useState<PageKey>("home");
 
   return (
     <div className="appShell">
@@ -49,6 +51,7 @@ function App() {
         </nav>
       </aside>
       <main className="main">
+        {active === "home" && <HomePage onNavigate={(target) => setActive(target)} />}
         {active === "data" && <DataPage />}
         {active === "kline" && <KlinePage />}
         {active === "strategies" && <StrategyPage />}

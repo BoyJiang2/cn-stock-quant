@@ -4,8 +4,8 @@
 
 body {
   margin: 0;
-  background: #f4f6f8;
-  color: #18202a;
+  background: #f5f7fa;
+  color: #171f2b;
   font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
 }
 
@@ -22,9 +22,10 @@ input {
 .sidebar {
   width: 240px;
   flex: 0 0 240px;
-  background: #17212f;
+  background: #151c26;
   color: #eef3f8;
   padding: 20px 14px;
+  border-right: 1px solid #243044;
 }
 
 .brand {
@@ -41,7 +42,7 @@ input {
   height: 36px;
   place-items: center;
   border-radius: 8px;
-  background: #28a197;
+  background: #2a9d8f;
   color: white;
   font-weight: 800;
 }
@@ -79,7 +80,7 @@ input {
 
 .navItem.active,
 .navItem:hover {
-  background: #223247;
+  background: #243244;
   color: #ffffff;
 }
 
@@ -87,6 +88,9 @@ input {
   flex: 1;
   min-width: 0;
   padding: 28px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(245, 247, 250, 0) 220px),
+    #f5f7fa;
 }
 
 .page {
@@ -196,6 +200,229 @@ h1 {
   color: #607086;
 }
 
+.homePage {
+  gap: 20px;
+}
+
+.homeHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 4px 0 2px;
+}
+
+.homeEyebrow {
+  margin-bottom: 8px;
+  color: #607086;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.homeHeader h1 {
+  font-size: 28px;
+}
+
+.homeSubline {
+  margin-top: 8px;
+  color: #607086;
+  font-size: 13px;
+}
+
+.homeHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.homeKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.homeKpi {
+  display: grid;
+  gap: 7px;
+  min-height: 116px;
+  align-content: center;
+  background: #ffffff;
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+
+.homeKpi span,
+.homeKpi small,
+.homePanelSub,
+.runSummary span,
+.artifactItem small {
+  color: #607086;
+}
+
+.homeKpi span,
+.runSummary span {
+  font-size: 13px;
+}
+
+.homeKpi strong {
+  font-size: 26px;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.homeKpi small {
+  min-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.homeCommandBar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.homeCommand {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2b3a;
+  cursor: pointer;
+  padding: 0 14px;
+  text-align: left;
+}
+
+.homeCommand:hover {
+  border-color: #2a9d8f;
+  color: #11675f;
+}
+
+.homeGrid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.08fr) minmax(280px, 1fr) minmax(280px, 1fr);
+  gap: 14px;
+}
+
+.homePanel {
+  display: grid;
+  gap: 16px;
+  min-height: 238px;
+  background: #ffffff;
+  border: 1px solid #dde4ec;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.homePanelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.homePanelTitle {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.homePanelSub {
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+.statusList,
+.artifactList {
+  display: grid;
+  gap: 10px;
+}
+
+.statusRow {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+
+.statusRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-self: end;
+}
+
+.runSummary div {
+  display: grid;
+  gap: 8px;
+  min-height: 86px;
+  align-content: center;
+  border: 1px solid #e3e9f0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.runSummary strong {
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.goodText {
+  color: #13795b;
+}
+
+.badText {
+  color: #b42318;
+}
+
+.artifactItem {
+  display: grid;
+  gap: 6px;
+  min-height: 46px;
+  border-bottom: 1px solid #edf1f5;
+  padding-bottom: 10px;
+}
+
+.artifactItem:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.artifactItem span {
+  font-weight: 700;
+}
+
+.artifactItem small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1180px) {
+  .homeKpiGrid,
+  .homeCommandBar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .homeGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 760px) {
   .appShell {
     display: block;
@@ -212,5 +439,22 @@ h1 {
 
   .main {
     padding: 18px;
+  }
+
+  .homeHeader,
+  .homeHeaderActions {
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .homeHeader {
+    display: grid;
+  }
+
+  .homeKpiGrid,
+  .homeCommandBar,
+  .homeGrid,
+  .runSummary {
+    grid-template-columns: 1fr;
   }
 }
