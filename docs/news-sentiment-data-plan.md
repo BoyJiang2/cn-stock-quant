@@ -27,6 +27,12 @@ Implemented in code:
 - `backend/app/data/repository.py`
   - `upsert_news_items`
   - `news_items`
+- `backend/app/data/news_text.py`
+  - `clean_news_text`
+  - `clean_news_payload`
+  - `has_mojibake`
+- `backend/repair_news_text.py`
+  - one-off scan/repair for persisted news text
 
 Canonical fields:
 
@@ -111,6 +117,29 @@ validate: the goal is avoiding blowups, not predicting every small move.
 - Current source timestamps may be local Beijing time; normalize consistently
   before backtests.
 
+## Text Quality And Encoding
+
+Implemented on 2026-07-07:
+
+- New news text cleaner repairs common UTF-8-as-Latin-1/Windows-1252 mojibake,
+  for example `å½å®¶` -> `国家`.
+- `AkShareNewsProvider` cleans title/body/source/raw payload before returning
+  records.
+- `MarketDataRepository.upsert_news_items()` cleans title/body/sentiment fields
+  and raw JSON before persistence.
+- `MarketDataRepository.news_items()` cleans output as a read-side fallback so
+  old dirty rows do not leak into API/front-end/model consumers.
+- `backend/repair_news_text.py --dry-run` scans persisted rows before optional
+  writeback.
+
+Current local check:
+
+- `python backend/repair_news_text.py --dry-run`
+- Result on 2026-07-07: `scanned=10`, `updated=0`, `remaining_suspect=0`.
+- The earlier `å...` display was mostly a PowerShell console encoding artifact;
+  direct Python DB reads show stored titles are already normal Chinese. The
+  cleaner remains in place as provider/storage/API defense.
+
 ## Next Tasks
 
 - [x] Define `NewsItem` schema
@@ -122,4 +151,8 @@ validate: the goal is avoiding blowups, not predicting every small move.
 - [ ] Add `sync_news.py` CLI wrapper for batch jobs
 - [x] Add negative-news rule classifier v1
 - [x] Add a risk filter that consumes recent negative news
+- [x] Add text cleaning and mojibake repair safeguards
 - [ ] Backtest price-only strategy vs price-plus-news-risk-filter
+- [ ] Add `sync_news.py` or batch job for research-pool news coverage
+- [ ] Add duplicate clustering by URL/title similarity
+- [ ] Add source coverage report by symbol/date/event type

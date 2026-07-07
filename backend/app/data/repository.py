@@ -6,6 +6,7 @@ import pandas as pd
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.data.news_text import clean_news_text
 from app.data.symbols import normalize_a_share_symbol, normalize_a_share_symbols
 from app.models.entities import DailyBar, IndexDailyBar, NewsItem, Stock, SyncJob, TradingCalendar
 
@@ -133,11 +134,11 @@ class MarketDataRepository:
                 title=str(row["title"]),
             )
             item.symbol = normalized_symbol
-            item.title = str(row["title"])
-            item.body = str(row.get("body") or "")
+            item.title = clean_news_text(row["title"])
+            item.body = clean_news_text(row.get("body"))
             item.url = str(row.get("url") or "")
             item.event_type = str(row.get("event_type") or "")
-            item.sentiment_label = str(row.get("sentiment_label") or "")
+            item.sentiment_label = clean_news_text(row.get("sentiment_label"))
             item.sentiment_score = _optional_float(row.get("sentiment_score"))
             item.relevance_score = _optional_float(row.get("relevance_score"))
             item.published_at = published_at
@@ -178,11 +179,11 @@ class MarketDataRepository:
                     "source": row.source,
                     "source_id": row.source_id,
                     "symbol": row.symbol,
-                    "title": row.title,
-                    "body": row.body,
+                    "title": clean_news_text(row.title),
+                    "body": clean_news_text(row.body),
                     "url": row.url,
-                    "event_type": row.event_type,
-                    "sentiment_label": row.sentiment_label,
+                    "event_type": clean_news_text(row.event_type),
+                    "sentiment_label": clean_news_text(row.sentiment_label),
                     "sentiment_score": row.sentiment_score,
                     "relevance_score": row.relevance_score,
                     "published_at": row.published_at,
@@ -954,5 +955,5 @@ def _raw_to_text(value) -> str:
     if value is None or value == "":
         return ""
     if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return clean_news_text(value)
+    return clean_news_text(json.dumps(value, ensure_ascii=False, sort_keys=True))

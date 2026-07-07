@@ -223,3 +223,20 @@ Validation:
 详细交接：
 
 - `docs/full-market-data-and-llm-regime-handoff.md`
+
+## 2026-07-07 新闻文本质量与基准回测修复
+
+完成：
+
+- 回测基准数据自动同步增强：当 `000300/000905/000852` 本地已有数据但覆盖不足时，回测会自动重新同步请求区间并重新验证覆盖。
+- 修复用户遇到的 `Benchmark 000300 does not cover strategy trading dates 2024-07-03 through 2026-07-02`。
+- 本地已补齐 `000300` 至 `2026-07-02`，同区间回测 API 验证通过。
+- 新增新闻文本清洗模块，修复常见 UTF-8 被 Latin-1/Windows-1252 误解码的乱码。
+- 新闻 provider、repository 写入、repository 读取都接入文本清洗。
+- 新增 `backend/repair_news_text.py`，用于扫描/修复历史新闻文本。
+
+验证：
+
+- `pytest backend\tests -q`：531 passed。
+- `python backend\repair_news_text.py --dry-run`：`scanned=10`，`updated=0`，`remaining_suspect=0`。
+- 直接 Python 读取 `data/quant.db` 新闻标题为正常中文；此前控制台看到的 `å...` 多数是 PowerShell 输出编码问题。

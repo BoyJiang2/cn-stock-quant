@@ -356,6 +356,46 @@ def test_sync_news_accepts_stock_name_and_list_news_filters_by_name(monkeypatch)
     assert items[0]["title"] == "通富微电获得机构买入"
 
 
+def test_sync_news_cleans_mojibake_provider_payload(monkeypatch):
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "002156", "通富微电", "SZ")
+
+    class FakeNewsProvider:
+        def stock_news(self, symbol, *, start_at=None, end_at=None):
+            return pd.DataFrame(
+                [
+                    {
+                        "source": "eastmoney_stock_news",
+                        "source_id": "em-002156-dirty",
+                        "symbol": symbol,
+                        "title": "ç»çåºæ¿æ¦å¿µä¸è·9.93%ï¼20è¡ä¸»åèµéåæµåºè¶äº¿å",
+                        "body": "é¿çµç§æ -10.00",
+                        "url": "https://example.com/news/dirty",
+                        "event_type": "risk_news",
+                        "sentiment_label": "risk",
+                        "sentiment_score": -0.4,
+                        "relevance_score": 1.0,
+                        "published_at": datetime(2026, 7, 2, 17, 29),
+                        "fetched_at": datetime(2026, 7, 3, 9, 0),
+                        "raw": {"æ°é»æ é¢": "ç»çåºæ¿æ¦å¿µä¸è·"},
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(data_module, "AkShareNewsProvider", FakeNewsProvider)
+    client = _client_with(session_factory)
+
+    sync_response = client.post("/api/data/sync/news", json={"symbol": "002156"})
+    list_response = client.get("/api/data/news", params={"symbol": "002156"})
+
+    assert sync_response.status_code == 200
+    assert list_response.status_code == 200
+    item = list_response.json()[0]
+    assert item["title"] == "玻璃基板概念下跌9.93%，20股主力资金净流出超亿元"
+    assert item["body"] == "长电科技 -10.00"
+    assert "新闻标题" in item["raw"]
+
+
 # ---------------------------------------------------------------------------
 # Shared fakes for the daily sync endpoints
 # ---------------------------------------------------------------------------

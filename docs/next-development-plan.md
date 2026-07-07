@@ -463,10 +463,12 @@ Goal: add event/sentiment data as a risk filter first, alpha later.
 | P4-1 | News source feasibility | GLM | done | Source report | Public/free sources listed with constraints | See `docs/news-sentiment-data-plan.md` |
 | P4-2 | `NewsProvider` protocol | Codex | done | Provider interface | Source-agnostic protocol exists | Implemented in `backend/app/data/news.py` |
 | P4-3 | News/announcement DB schema | Codex | done | Tables/models | Stores `published_at` and `fetched_at` | Implemented as `NewsItem` |
-| P4-4 | First news sync implementation | GLM + Codex | todo | Sync command/API | Can sync sample news/announcements | Start small and reliable |
-| P4-5 | Sentiment/event classifier v1 | DeepSeek + Codex | todo | Rule or model scoring module | Outputs sentiment/event fields with version | LLM later, simple first |
-| P4-6 | Negative-news risk filter | Codex | todo | Strategy/risk filter | Backtest shows drawdown or event-risk improvement | First practical use case |
-| P4-7 | Sentiment factor experiment | Codex | blocked | Factor RankIC/backtest | Requires P4-3/P4-5 data | Compare price-only vs price+sentiment |
+| P4-4 | First news sync implementation | GLM + Codex | done | Sync API | Can sync/query sample stock news | Implemented via `AkShareNewsProvider` and `/api/data/sync/news` |
+| P4-5 | Sentiment/event classifier v1 | DeepSeek + Codex | done | Rule scoring module | Outputs sentiment/event fields | Implemented in `backend/app/data/news_sentiment.py`; LLM version later |
+| P4-6 | Negative-news risk filter | Codex | done | Strategy/risk filter | Backtest can exclude recent negative/risk news | `ml_score_rank` consumes DB news via `use_db_negative_news` |
+| P4-7 | Sentiment factor experiment | Codex | todo | Factor RankIC/backtest | Requires broader news coverage | Compare price-only vs price+sentiment |
+| P4-8 | News text quality repair | Codex | done | Cleaning module + repair script | Mojibake news text is cleaned before provider/storage/API use | `backend/app/data/news_text.py`, `backend/repair_news_text.py` |
+| P4-9 | Batch news coverage expansion | GLM + Codex | todo | Batch sync CLI/job | Research pool has enough news rows for 2026 backtests | Current sample coverage is too sparse |
 
 ### P5: Factor Expansion
 

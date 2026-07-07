@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.data.news import NEWS_COLUMNS
 from app.data.news_sentiment import classify_news_text
+from app.data.news_text import clean_news_payload, clean_news_text
 from app.data.symbols import normalize_a_share_symbol
 
 
@@ -38,10 +39,10 @@ class AkShareNewsProvider:
             if end_at is not None and published_at > end_at:
                 continue
 
-            title = str(item.get("新闻标题") or "").strip()
-            body = str(item.get("新闻内容") or "").strip()
+            title = clean_news_text(item.get("新闻标题"))
+            body = clean_news_text(item.get("新闻内容"))
             url = str(item.get("新闻链接") or "").strip()
-            source_name = str(item.get("文章来源") or "").strip()
+            source_name = clean_news_text(item.get("文章来源"))
             event_type, sentiment_label, sentiment_score = classify_news_text(title, body)
             rows.append(
                 {
@@ -57,7 +58,7 @@ class AkShareNewsProvider:
                     "relevance_score": 1.0,
                     "published_at": published_at,
                     "fetched_at": fetched_at,
-                    "raw": {**item, "source_name": source_name},
+                    "raw": clean_news_payload({**item, "source_name": source_name}),
                 }
             )
         return pd.DataFrame(rows, columns=NEWS_COLUMNS)

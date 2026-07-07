@@ -374,6 +374,37 @@ def test_repository_rejects_news_items_without_required_timestamps():
         raise AssertionError("missing fetched_at should fail")
 
 
+def test_repository_cleans_mojibake_news_text_on_upsert_and_query():
+    repository = make_repository()
+
+    repository.upsert_news_items(
+        pd.DataFrame(
+            [
+                {
+                    "source": "eastmoney_stock_news",
+                    "source_id": "em-mojibake",
+                    "symbol": "002156",
+                    "title": "çµå­è¡ä¸ä»æ¥åæµåºèµé147.94äº¿å",
+                    "body": "é¿çµç§æç­77è¡åæµåºèµéè¶äº¿å",
+                    "event_type": "risk_news",
+                    "sentiment_label": "risk",
+                    "sentiment_score": -0.4,
+                    "relevance_score": 1.0,
+                    "published_at": datetime(2026, 6, 29, 16, 37),
+                    "fetched_at": datetime(2026, 7, 3, 9, 0),
+                    "raw": {"æ°é»æ é¢": "çµå­è¡ä¸ä»æ¥åæµåº"},
+                }
+            ]
+        )
+    )
+
+    items = repository.news_items(symbol="002156")
+
+    assert items.iloc[0]["title"] == "电子行业今日净流出资金147.94亿元"
+    assert items.iloc[0]["body"] == "长电科技等77股净流出资金超亿元"
+    assert "新闻标题" in items.iloc[0]["raw"]
+
+
 def test_research_sync_candidates_exclude_risk_names_and_covered_symbols():
     repository = make_repository()
     repository.upsert_stocks(
