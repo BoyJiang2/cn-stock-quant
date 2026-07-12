@@ -155,9 +155,11 @@ Current local check:
 - [x] Add a risk filter that consumes recent negative news
 - [x] Add text cleaning and mojibake repair safeguards
 - [ ] Backtest price-only strategy vs price-plus-news-risk-filter
-- [ ] Run research-pool batch sync for 2026 news coverage
+- [x] Run research-pool batch sync for 2026 news coverage
+- [x] Run first price-only vs price-plus-news-risk-filter comparison
 - [ ] Add duplicate clustering by URL/title similarity
 - [ ] Add source coverage report by symbol/date/event type
+- [ ] Split event taxonomy into severe company-specific, company-risk, industry-flow, and market-flow
 
 ## Batch Sync Commands
 
@@ -178,3 +180,39 @@ Recommended first research-pool batch:
 ```powershell
 python backend\sync_news.py --symbol-source research_pool --start-date 2026-01-01 --end-date 2026-07-02 --pool-max-symbols 100 --batch-size 10 --min-request-interval 0.5 --json-output backend\artifacts\news\research-pool-100-news-sync-report.json --markdown-output backend\artifacts\news\research-pool-100-news-sync-report.md
 ```
+
+## First 2026 Research Results
+
+Run date: 2026-07-12.
+
+Coverage:
+
+- 100-symbol research pool: `success=92`, `empty=8`, `failed=0`,
+  `news_rows=588`, `risk_rows=107`, `symbols_with_risk_news=48`.
+- 300-symbol research pool: `success=275`, `empty=25`, `failed=0`,
+  `news_rows=1828`, `risk_rows=364`, `symbols_with_risk_news=151`.
+
+Important availability rule:
+
+- `observed`: uses `known_at=max(published_at,fetched_at)`, safe for live-style
+  backtests. Since historical news was fetched on 2026-07-12, it does not affect
+  2026-01..06 historical trades.
+- `published_at`: retrospective research mode. It approximates a system that
+  had the public news feed at the time. Use only for signal research and label
+  reports clearly.
+
+ML Score Rank comparison on 300-symbol pool, 2026-01-05..2026-06-10,
+`published_at`, `negative_news_lookback_days=3`:
+
+- baseline total return: `-9.6254%`
+- news-filter total return: `-9.0800%`
+- total return delta: `+0.5454%`
+- max drawdown: `-12.5667%` -> `-12.1178%`
+- Sharpe: `-1.2500` -> `-1.1794`
+
+Interpretation:
+
+- News-risk filtering showed a small positive effect on the 300-symbol ML pool.
+- The 100-symbol pool was unstable: same-day filtering helped slightly, longer
+  lookbacks hurt. This suggests the classifier is too broad and should separate
+  severe company-specific events from generic industry/market fund-flow news.

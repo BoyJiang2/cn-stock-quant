@@ -206,7 +206,25 @@ def _load_negative_news_history(
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return None
-    return pd.concat(frames, ignore_index=True)
+    news_history = pd.concat(frames, ignore_index=True)
+    return _apply_news_availability(news_history, str(params.get("news_availability", "observed")))
+
+
+def _apply_news_availability(news_history: pd.DataFrame, mode: str) -> pd.DataFrame:
+    frame = news_history.copy()
+    normalized = (mode or "observed").strip().lower()
+    if normalized in {"published", "published_at", "source_published", "research"}:
+        frame["known_at"] = pd.to_datetime(frame["published_at"], errors="coerce")
+    elif normalized in {"observed", "fetched", "fetched_at", "live"}:
+        frame["published_at"] = pd.to_datetime(frame["published_at"], errors="coerce")
+        frame["fetched_at"] = pd.to_datetime(frame["fetched_at"], errors="coerce")
+        frame["known_at"] = frame[["published_at", "fetched_at"]].max(axis=1)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="news_availability must be 'observed' or 'published_at'.",
+        )
+    return frame
 
 
 def _truthy(value) -> bool:

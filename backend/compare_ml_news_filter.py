@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--negative-news-lookback-days", type=int, default=3)
     parser.add_argument("--negative-news-min-relevance", type=float, default=0.0)
     parser.add_argument("--negative-news-max-sentiment", type=float, default=-0.2)
+    parser.add_argument(
+        "--news-availability",
+        choices=["observed", "published_at"],
+        default="observed",
+        help="observed uses max(published_at, fetched_at); published_at is a retrospective research mode.",
+    )
     parser.add_argument("--include-curves", action="store_true")
     parser.add_argument("--json-output", type=Path, default=Path("ml-news-filter-comparison.json"))
     parser.add_argument("--markdown-output", type=Path)
@@ -100,6 +106,7 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
             "bar_rows": int(len(bars)),
             "benchmark_symbol": args.benchmark_symbol if benchmark_bars is not None else None,
             "news_lookback_days": args.negative_news_lookback_days,
+            "news_availability": args.news_availability,
             "news_rows": int(len(news_history)) if news_history is not None else 0,
             "timing_seconds": round(time.time() - started_at, 3),
         },
@@ -164,7 +171,19 @@ def _load_news_history(
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return None
-    return pd.concat(frames, ignore_index=True)
+    frames = [frame.dropna(axis=1, how="all") for frame in frames]
+    return _apply_news_availability(pd.concat(frames, ignore_index=True), args.news_availability)
+
+
+def _apply_news_availability(news_history: pd.DataFrame, mode: str) -> pd.DataFrame:
+    frame = news_history.copy()
+    if mode == "published_at":
+        frame["known_at"] = pd.to_datetime(frame["published_at"], errors="coerce")
+        return frame
+    frame["published_at"] = pd.to_datetime(frame["published_at"], errors="coerce")
+    frame["fetched_at"] = pd.to_datetime(frame["fetched_at"], errors="coerce")
+    frame["known_at"] = frame[["published_at", "fetched_at"]].max(axis=1)
+    return frame
 
 
 def _run_variant(
@@ -343,6 +362,7 @@ def to_markdown(report: dict[str, Any]) -> str:
         f"- start: `{report['metadata']['start_date']}`",
         f"- end: `{report['metadata']['end_date']}`",
         f"- selected_symbol_count: `{report['metadata']['selected_symbol_count']}`",
+        f"- news_availability: `{report['metadata'].get('news_availability', 'observed')}`",
         f"- news_risk_symbols: `{report['news_risk']['risk_symbol_count']}`",
         "",
         "## Runs",

@@ -286,6 +286,64 @@ def test_run_backtest_ml_score_rank_uses_db_negative_news(tmp_path):
     assert any(trade["symbol"] == "000002" and trade["side"] == "buy" for trade in trades)
 
 
+def test_run_backtest_ml_score_rank_news_availability_published_at_mode(tmp_path):
+    session_factory = _make_session_factory()
+    for symbol in ("000001", "000002"):
+        _seed_stock(session_factory, symbol, f"Stock {symbol}", "SZ")
+        _seed_daily_bars(session_factory, symbol, date(2024, 1, 1), date(2024, 1, 25))
+    _seed_news_item(
+        session_factory,
+        "000001",
+        published_at=datetime(2024, 1, 4, 15, 0),
+        fetched_at=datetime(2026, 7, 12, 15, 10),
+    )
+    scores_path = tmp_path / "scores.csv"
+    scores_path.write_text(
+        "\n".join(
+            ["trade_date,symbol,score"]
+            + [
+                f"2024-01-{day:02d},000001,0.90\n2024-01-{day:02d},000002,0.70"
+                for day in range(1, 26)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    client = _client_with(session_factory)
+
+    def run(mode: str):
+        return client.post(
+            "/api/backtests/run",
+            json={
+                "strategy_name": "ml_score_rank",
+                "symbol_source": "manual",
+                "symbols": ["000001", "000002"],
+                "benchmark_symbol": None,
+                "start_date": "2024-01-05",
+                "end_date": "2024-01-25",
+                "parameters": {
+                    "scores_path": str(scores_path),
+                    "top_n": 1,
+                    "max_position_weight": 0.5,
+                    "max_total_weight": 0.5,
+                    "min_avg_amount_20d": 0,
+                    "min_price": 1,
+                    "use_db_negative_news": True,
+                    "news_availability": mode,
+                    "negative_news_lookback_days": 30,
+                },
+            },
+        )
+
+    observed = run("observed")
+    published = run("published_at")
+
+    assert observed.status_code == 200
+    assert published.status_code == 200
+    assert any(trade["symbol"] == "000001" and trade["side"] == "buy" for trade in observed.json()["trades"])
+    assert not any(trade["symbol"] == "000001" and trade["side"] == "buy" for trade in published.json()["trades"])
+    assert any(trade["symbol"] == "000002" and trade["side"] == "buy" for trade in published.json()["trades"])
+
+
 def test_run_backtest_ml_score_rank_ignores_db_news_when_disabled(tmp_path):
     session_factory = _make_session_factory()
     for symbol in ("000001", "000002"):

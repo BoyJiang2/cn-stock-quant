@@ -156,6 +156,21 @@ def sync_news_symbols(
                 summary.failed += 1
                 if stop_on_error:
                     return summary
+            print(
+                json.dumps(
+                    {
+                        "processed": summary.processed,
+                        "total": summary.total,
+                        "symbol": item.symbol,
+                        "status": item.status,
+                        "news_rows": item.news_rows,
+                        "risk_rows": item.risk_rows,
+                        "message": item.message,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
             if min_request_interval > 0 and not dry_run:
                 time.sleep(min_request_interval)
     return summary

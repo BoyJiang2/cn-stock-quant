@@ -261,3 +261,29 @@ Validation:
 
 - 用 `sync_news.py` 对研究池先跑 100 只，再扩到 300 只。
 - 生成覆盖报告后重跑 `compare_ml_news_filter.py`，比较 price-only 与 news-risk-filter。
+
+## 2026-07-12 研究池新闻覆盖与首轮过滤验证
+
+完成：
+
+- 研究池 100 只新闻同步：`success=92`，`empty=8`，`failed=0`，`news_rows=588`，`risk_rows=107`。
+- 研究池 300 只新闻同步：`success=275`，`empty=25`，`failed=0`，`news_rows=1828`，`risk_rows=364`。
+- `sync_news.py` 增加逐 symbol 进度输出，便于监控长任务。
+- `compare_ml_news_filter.py` 增加 `--news-availability observed|published_at`。
+- `ml_score_rank` 前端/后端参数增加 `news_availability`，默认 `observed`，研究模式可填 `published_at`。
+
+验证结果：
+
+- `observed` 模式保持实盘防泄漏：历史新闻因 `fetched_at=2026-07-12` 不影响 2026-01 至 2026-06 回测。
+- `published_at` 研究模式可评估历史新闻信号。
+- 300-symbol ML Score Rank，2026-01-05 至 2026-06-10，`published_at + lookback=3`：
+  - baseline total return：`-9.6254%`
+  - news-filter total return：`-9.0800%`
+  - delta：`+0.5454%`
+  - max drawdown：`-12.5667%` -> `-12.1178%`
+  - Sharpe：`-1.2500` -> `-1.1794`
+
+结论：
+
+- 新闻风险过滤在 300-symbol ML 池上有轻微正贡献，但策略整体仍亏损。
+- 当前 `risk_news` 规则过宽，下一步需要把公司级严重风险、公司级经营风险、行业资金流、市场情绪新闻拆开测试。

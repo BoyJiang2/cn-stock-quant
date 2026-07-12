@@ -1,6 +1,7 @@
 import pandas as pd
 
 from compare_ml_news_filter import (
+    _apply_news_availability,
     _comparison,
     _filtered_symbols_summary,
     _news_risk_summary,
@@ -99,6 +100,24 @@ def test_filtered_symbols_summary_groups_risk_news_by_symbol():
     assert summary[0]["blocked_days"] == 2
     assert summary[0]["news_count"] == 2
     assert summary[0]["latest_title"] == "risk two"
+
+
+def test_apply_news_availability_can_use_published_at_for_research_mode():
+    frame = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "published_at": "2026-01-05 10:00:00",
+                "fetched_at": "2026-07-12 10:00:00",
+            }
+        ]
+    )
+
+    observed = _apply_news_availability(frame, "observed")
+    published = _apply_news_availability(frame, "published_at")
+
+    assert str(observed.iloc[0]["known_at"]) == "2026-07-12 10:00:00"
+    assert str(published.iloc[0]["known_at"]) == "2026-01-05 10:00:00"
 
 
 def test_to_markdown_includes_variants_and_comparison():

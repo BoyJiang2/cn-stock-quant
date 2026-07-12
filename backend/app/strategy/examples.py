@@ -1124,6 +1124,7 @@ class MLScoreRankStrategy(Strategy):
         StrategyParameter("exclude_gap_types", "Excluded gap types", "str", "suspended,provider_gap,limit_halt,unknown"),
         StrategyParameter("negative_news_path", "Negative-news CSV path", "str", ""),
         StrategyParameter("use_db_negative_news", "Use DB negative news", "bool", False),
+        StrategyParameter("news_availability", "News availability mode", "str", "observed"),
         StrategyParameter("negative_news_lookback_days", "Negative-news lookback days", "int", 3, min=0, step=1),
         StrategyParameter("negative_news_min_relevance", "Negative-news relevance floor", "float", 0.0, min=0.0, max=1.0, step=0.05),
         StrategyParameter("negative_news_max_sentiment", "Negative sentiment score cap", "float", -0.2, step=0.05),
