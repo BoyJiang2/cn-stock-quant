@@ -33,6 +33,8 @@ Implemented in code:
   - `has_mojibake`
 - `backend/repair_news_text.py`
   - one-off scan/repair for persisted news text
+- `backend/sync_news.py`
+  - batch news sync and coverage report CLI
 
 Canonical fields:
 
@@ -148,11 +150,31 @@ Current local check:
 - [x] Add `AkShareNewsProvider`
 - [x] Add HTTP sync/query endpoints for small symbol-list sync
 - [x] Add tests with fake provider responses
-- [ ] Add `sync_news.py` CLI wrapper for batch jobs
+- [x] Add `sync_news.py` CLI wrapper for batch jobs
 - [x] Add negative-news rule classifier v1
 - [x] Add a risk filter that consumes recent negative news
 - [x] Add text cleaning and mojibake repair safeguards
 - [ ] Backtest price-only strategy vs price-plus-news-risk-filter
-- [ ] Add `sync_news.py` or batch job for research-pool news coverage
+- [ ] Run research-pool batch sync for 2026 news coverage
 - [ ] Add duplicate clustering by URL/title similarity
 - [ ] Add source coverage report by symbol/date/event type
+
+## Batch Sync Commands
+
+Dry-run research-pool selection without network:
+
+```powershell
+python backend\sync_news.py --symbol-source research_pool --start-date 2026-01-01 --end-date 2026-07-02 --pool-max-symbols 20 --dry-run --json-output backend\artifacts\news\dry-run-news-sync-report.json --markdown-output backend\artifacts\news\dry-run-news-sync-report.md
+```
+
+Single-symbol live sync smoke test:
+
+```powershell
+python backend\sync_news.py --symbols 002156 --start-date 2026-06-01 --end-date 2026-07-03 --batch-size 1 --min-request-interval 0 --json-output backend\artifacts\news\002156-news-sync-report.json --markdown-output backend\artifacts\news\002156-news-sync-report.md
+```
+
+Recommended first research-pool batch:
+
+```powershell
+python backend\sync_news.py --symbol-source research_pool --start-date 2026-01-01 --end-date 2026-07-02 --pool-max-symbols 100 --batch-size 10 --min-request-interval 0.5 --json-output backend\artifacts\news\research-pool-100-news-sync-report.json --markdown-output backend\artifacts\news\research-pool-100-news-sync-report.md
+```

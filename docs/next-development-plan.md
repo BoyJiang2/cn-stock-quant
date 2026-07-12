@@ -468,7 +468,8 @@ Goal: add event/sentiment data as a risk filter first, alpha later.
 | P4-6 | Negative-news risk filter | Codex | done | Strategy/risk filter | Backtest can exclude recent negative/risk news | `ml_score_rank` consumes DB news via `use_db_negative_news` |
 | P4-7 | Sentiment factor experiment | Codex | todo | Factor RankIC/backtest | Requires broader news coverage | Compare price-only vs price+sentiment |
 | P4-8 | News text quality repair | Codex | done | Cleaning module + repair script | Mojibake news text is cleaned before provider/storage/API use | `backend/app/data/news_text.py`, `backend/repair_news_text.py` |
-| P4-9 | Batch news coverage expansion | GLM + Codex | todo | Batch sync CLI/job | Research pool has enough news rows for 2026 backtests | Current sample coverage is too sparse |
+| P4-9 | Batch news sync CLI and coverage report | Codex | done | `backend/sync_news.py` | Can batch sync manual/research-pool symbols and output JSON/Markdown coverage | Dry-run and single-symbol live sync verified |
+| P4-10 | Research-pool news coverage expansion | GLM + Codex | todo | Batch sync run artifacts | Research pool has enough news rows for 2026 backtests | Use P4-9 CLI; start with 100-300 symbols and rate limiting |
 
 ### P5: Factor Expansion
 

@@ -240,3 +240,24 @@ Validation:
 - `pytest backend\tests -q`：531 passed。
 - `python backend\repair_news_text.py --dry-run`：`scanned=10`，`updated=0`，`remaining_suspect=0`。
 - 直接 Python 读取 `data/quant.db` 新闻标题为正常中文；此前控制台看到的 `å...` 多数是 PowerShell 输出编码问题。
+
+## 2026-07-12 批量新闻同步与覆盖报告
+
+完成：
+
+- 新增 `backend/sync_news.py` 批量新闻同步 CLI。
+- 支持 `manual` 和 `research_pool` 两种股票来源。
+- 支持 `--start-date/--end-date`、`--batch-size`、`--pool-max-symbols`、`--min-request-interval`、`--dry-run`。
+- 每只股票输出同步状态、新闻条数、风险新闻条数、发布时间范围、来源列表和错误信息。
+- 输出 JSON 和 Markdown 覆盖报告，写入 `backend/artifacts/news/`。
+
+验证：
+
+- `pytest backend\tests\test_sync_news_runner.py backend\tests\test_news_text.py backend\tests\test_data_routes.py::test_sync_news_accepts_stock_name_and_list_news_filters_by_name -q`：7 passed。
+- 研究池 dry-run：20 只股票被选出，不触发网络。
+- 单股 live sync：`002156` 在 `2026-06-01` 至 `2026-07-03` 同步成功，返回 2 条新闻。
+
+后续：
+
+- 用 `sync_news.py` 对研究池先跑 100 只，再扩到 300 只。
+- 生成覆盖报告后重跑 `compare_ml_news_filter.py`，比较 price-only 与 news-risk-filter。
