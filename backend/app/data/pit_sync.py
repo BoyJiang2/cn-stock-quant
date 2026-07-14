@@ -19,6 +19,7 @@ Job types
 * ``security_status_current``  -- refresh current ST + listed snapshot
 * ``security_delist``          -- backfill delisted intervals (SH/SZ)
 * ``security_names``           -- write current name intervals
+* ``security_name_history``    -- backfill Shenzhen historical abbreviations
 * ``index_constituents``       -- write current index constituent intervals
 * ``index_weights``            -- write index weight snapshots
 """
@@ -31,7 +32,11 @@ from typing import Any, Iterable, Protocol, runtime_checkable
 
 import pandas as pd
 
-from app.data.akshare_pit_provider import PitProvider
+from app.data.akshare_pit_provider import (
+    PitProvider,
+    _classify_st_name,
+    _is_st_name,
+)
 from app.data.pit_repository import PitRepository
 from app.data.symbols import normalize_a_share_symbol
 from app.models.entities import SyncJob
@@ -50,6 +55,10 @@ class PitSyncRepositoryLike(Protocol):
     """Subset of :class:`PitRepository` used by the coordinator."""
 
     def upsert_security_status(self, rows: Iterable[dict[str, Any]]) -> int: ...
+    def upsert_security_st_status(self, rows: Iterable[dict[str, Any]]) -> int: ...
+    def reconcile_current_st_status(
+        self, rows: Iterable[dict[str, Any]], as_of: date
+    ) -> int: ...
     def upsert_security_name(self, rows: Iterable[dict[str, Any]]) -> int: ...
     def upsert_index_constituent(self, rows: Iterable[dict[str, Any]]) -> int: ...
     def upsert_index_weight_snapshot(self, rows: Iterable[dict[str, Any]]) -> int: ...
@@ -63,6 +72,7 @@ class PitSyncProviderLike(Protocol):
     def current_st_list(self) -> pd.DataFrame: ...
     def sh_delist(self) -> pd.DataFrame: ...
     def sz_delist(self) -> pd.DataFrame: ...
+    def sz_name_changes(self) -> pd.DataFrame: ...
     def stock_list_with_list_date(self) -> pd.DataFrame: ...
     def index_constituents_current(self, index_symbol: str) -> pd.DataFrame: ...
     def index_weights_current(self, index_symbol: str) -> pd.DataFrame: ...
@@ -186,6 +196,10 @@ class PitSyncCoordinator:
             )
 
         st_rows: list[dict[str, Any]] = []
+        st_by_symbol = {
+            normalize_a_share_symbol(row["symbol"]): str(row["status"])
+            for row in st_list.to_dict("records")
+        }
         for row in st_list.to_dict("records"):
             st_rows.append(
                 {
@@ -198,8 +212,27 @@ class PitSyncCoordinator:
                     "confidence": self._config.default_confidence,
                 }
             )
+        st_axis_rows = [
+            {
+                "symbol": row["symbol"],
+                "st_status": st_by_symbol.get(
+                    normalize_a_share_symbol(row["symbol"]), "normal"
+                ),
+                "valid_from": today,
+                "valid_to": None,
+                "announced_at": None,
+                "source": row.get("source", self._config.default_source),
+                "confidence": self._config.default_confidence,
+            }
+            for row in listed.to_dict("records")
+            if not isinstance(row.get("list_date"), date)
+            or row["list_date"] <= today
+        ]
         listed_written = self._repository.upsert_security_status(listed_rows)
         st_written = self._repository.reconcile_current_st_snapshot(st_rows, today)
+        st_axis_written = self._repository.reconcile_current_st_status(
+            st_axis_rows, today
+        )
         written = listed_written + st_written
         st_count = len(st_rows)
         summary = PitSyncSummary(
@@ -207,7 +240,11 @@ class PitSyncCoordinator:
             target="all",
             records=written,
             status="success",
-            extras={"listed": listed_written, "st": st_count},
+            extras={
+                "listed": listed_written,
+                "st": st_count,
+                "st_axis": st_axis_written,
+            },
         )
         self._record_job(
             summary.job_type,
@@ -340,6 +377,44 @@ class PitSyncCoordinator:
         )
         return summary
 
+    def sync_security_name_history(self) -> PitSyncSummary:
+        """Backfill Shenzhen historical names and ST-state intervals.
+
+        The SZSE abbreviation-change feed supplies effective dates but no
+        publication time.  Therefore all generated intervals retain
+        ``announced_at=None`` and ST rows use ``confidence=medium``.  This
+        deliberately avoids treating a later data refresh as information
+        known on the historical change date.
+        """
+        try:
+            changes = self._provider.sz_name_changes()
+        except Exception as exc:
+            self._record_job("security_name_history", "SZ", "failed", message=str(exc))
+            raise
+
+        name_rows = _historical_name_rows(changes, self._config.default_source)
+        st_rows = _historical_st_rows(changes, self._config.default_source)
+        names_written = self._repository.upsert_security_name(name_rows)
+        st_written = self._repository.upsert_security_st_status(st_rows)
+        summary = PitSyncSummary(
+            job_type="security_name_history",
+            target="SZ",
+            records=names_written + st_written,
+            status="success",
+            extras={
+                "name_changes": names_written,
+                "st_intervals": st_written,
+            },
+        )
+        self._record_job(
+            summary.job_type,
+            summary.target,
+            summary.status,
+            records=summary.records,
+            message=f"names={names_written}, st_intervals={st_written}",
+        )
+        return summary
+
     def sync_index_constituents(self, index_symbol: str) -> PitSyncSummary:
         """Write the *current* constituent intervals for *index_symbol*."""
         target = normalize_a_share_symbol(index_symbol)
@@ -468,3 +543,89 @@ class PitSyncCoordinator:
         except Exception:
             # Failing to record the job must not abort the sync.
             return None
+
+
+def _historical_name_rows(
+    changes: pd.DataFrame,
+    default_source: str,
+) -> list[dict[str, Any]]:
+    """Convert post-change names to half-open historical intervals."""
+    rows: list[dict[str, Any]] = []
+    if changes.empty:
+        return rows
+    for _, group in changes.groupby("symbol", sort=False):
+        events = group.sort_values("change_date").to_dict("records")
+        for index, event in enumerate(events):
+            next_date = (
+                events[index + 1]["change_date"]
+                if index + 1 < len(events)
+                else None
+            )
+            rows.append(
+                {
+                    "symbol": event["symbol"],
+                    "name": event["name"],
+                    "valid_from": event["change_date"],
+                    "valid_to": next_date,
+                    "announced_at": None,
+                    "source": event.get("source", default_source),
+                }
+            )
+    return rows
+
+
+def _historical_st_rows(
+    changes: pd.DataFrame,
+    default_source: str,
+) -> list[dict[str, Any]]:
+    """Extract ST-state transitions from the SZSE name-change history.
+
+    We intentionally do not infer a ``normal`` interval before the first
+    observed ST transition.  The source only tells us when a changed name
+    appears, not the complete naming history before its earliest record.
+    """
+    rows: list[dict[str, Any]] = []
+    if changes.empty:
+        return rows
+    for _, group in changes.groupby("symbol", sort=False):
+        active: dict[str, Any] | None = None
+        for event in group.sort_values("change_date").to_dict("records"):
+            status = _historical_st_status(event["name"])
+            if active is None:
+                if status == "normal":
+                    continue
+                active = {
+                    "symbol": event["symbol"],
+                    "st_status": status,
+                    "valid_from": event["change_date"],
+                    "valid_to": None,
+                    "announced_at": None,
+                    "source": event.get("source", default_source),
+                    "confidence": "medium",
+                }
+                rows.append(active)
+                continue
+            if active["st_status"] == status:
+                continue
+            active["valid_to"] = event["change_date"]
+            active = {
+                "symbol": event["symbol"],
+                "st_status": status,
+                "valid_from": event["change_date"],
+                "valid_to": None,
+                "announced_at": None,
+                "source": event.get("source", default_source),
+                "confidence": "medium",
+            }
+            rows.append(active)
+    return rows
+
+
+def _historical_st_status(name: str) -> str:
+    """Classify an SZSE historical abbreviation into the ST vocabulary."""
+    normalized = str(name or "").strip()
+    if _is_st_name(normalized):
+        return _classify_st_name(normalized)
+    if "\u9000\u5e02" in normalized or "\u9000" in normalized:
+        return "st_star"
+    return "normal"

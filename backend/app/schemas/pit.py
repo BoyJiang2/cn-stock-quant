@@ -16,6 +16,7 @@ __all__ = [
     "PitSyncSecurityStatusResponse",
     "PitSyncSecurityNamesRequest",
     "PitSyncSecurityNamesResponse",
+    "PitSyncSecurityNameHistoryResponse",
     "PitSyncSecurityDelistRequest",
     "PitSyncSecurityDelistResponse",
     "PitSyncIndexConstituentsRequest",
@@ -59,6 +60,13 @@ class PitSyncSecurityNamesRequest(BaseModel):
 
 class PitSyncSecurityNamesResponse(BaseModel):
     synced: int
+    source: str
+
+
+class PitSyncSecurityNameHistoryResponse(BaseModel):
+    synced: int
+    name_changes: int
+    st_intervals: int
     source: str
 
 
@@ -106,7 +114,10 @@ class PitSyncIndexWeightsResponse(BaseModel):
 
 class PitSecurityStatusOut(BaseModel):
     symbol: str
+    # Legacy mixed status retained for existing API consumers.
     status: str
+    availability_status: str | None = None
+    st_status: str | None = None
     valid_from: date
     valid_to: date | None = None
     announced_at: date | None = None
@@ -185,8 +196,10 @@ class PitResearchPoolOut(BaseModel):
 class PitCoverageReportOut(BaseModel):
     security_status_rows: int
     security_name_rows: int
+    security_st_status_rows: int = 0
     status_missing_announced_at: int
     name_missing_announced_at: int
+    st_status_missing_announced_at: int = 0
     index_constituent_rows: int
     index_weight_snapshot_rows: int
     pit_ready: bool

@@ -27,7 +27,7 @@ from typing import Any
 
 import pandas as pd
 
-from app.data.errors import DataProviderError, ProviderUnavailableError
+from app.data.errors import MissingColumnError, ProviderUnavailableError
 from app.data.symbols import normalize_a_share_symbol
 
 __all__ = [
@@ -51,6 +51,7 @@ class PitProvider:
     def current_st_list(self) -> pd.DataFrame: ...
     def sh_delist(self) -> pd.DataFrame: ...
     def sz_delist(self) -> pd.DataFrame: ...
+    def sz_name_changes(self) -> pd.DataFrame: ...
     def stock_list_with_list_date(self) -> pd.DataFrame: ...
     def index_constituents_current(self, index_symbol: str) -> pd.DataFrame: ...
     def index_weights_current(self, index_symbol: str) -> pd.DataFrame: ...
@@ -233,6 +234,80 @@ class AkSharePitProvider:
             list_col="上市日期",
             delist_col="终止上市日期",
             source="akshare.sz_delist",
+        )
+
+    # --- Shenzhen historical names --------------------------------------
+
+    def sz_name_changes(self) -> pd.DataFrame:
+        """Return Shenzhen abbreviation-change events without backdating.
+
+        ``stock_info_sz_change_name(\"\u7b80\u79f0\u53d8\u66f4\")`` reports the date on
+        which the exchange records a new abbreviation.  It does not provide
+        an announcement timestamp, so consumers must treat ``change_date``
+        as an effective-date observation, not proof that the information was
+        available before that day.
+
+        Output columns: ``symbol``, ``previous_name``, ``name``,
+        ``change_date``, ``source``.  ``name`` is the post-change name.
+        """
+        import akshare as ak
+
+        source = "akshare.sz_change_name"
+        try:
+            raw = ak.stock_info_sz_change_name(symbol="\u7b80\u79f0\u53d8\u66f4")
+        except Exception as exc:
+            raise ProviderUnavailableError(
+                symbol="sz_name_changes",
+                main_error=exc,
+                source=source,
+            ) from exc
+
+        if raw is None or raw.empty:
+            return pd.DataFrame(
+                columns=["symbol", "previous_name", "name", "change_date", "source"]
+            )
+
+        columns = {
+            "change_date": "\u53d8\u66f4\u65e5\u671f",
+            "symbol": "\u8bc1\u5238\u4ee3\u7801",
+            "previous_name": "\u53d8\u66f4\u524d\u7b80\u79f0",
+            "name": "\u53d8\u66f4\u540e\u7b80\u79f0",
+        }
+        missing = [column for column in columns.values() if column not in raw.columns]
+        if missing:
+            raise MissingColumnError(missing, [str(column) for column in raw.columns], source)
+
+        rows: list[dict[str, Any]] = []
+        for _, row in raw.iterrows():
+            try:
+                symbol = normalize_a_share_symbol(str(row[columns["symbol"]]))
+            except ValueError:
+                continue
+            change_date = _to_date(row[columns["change_date"]])
+            name = str(row[columns["name"]]).strip()
+            if change_date is None or not name or name.lower() == "nan":
+                continue
+            previous_name = str(row[columns["previous_name"]]).strip()
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "previous_name": "" if previous_name.lower() == "nan" else previous_name,
+                    "name": name,
+                    "change_date": change_date,
+                    "source": source,
+                }
+            )
+
+        result = pd.DataFrame(
+            rows,
+            columns=["symbol", "previous_name", "name", "change_date", "source"],
+        )
+        if result.empty:
+            return result
+        return (
+            result.sort_values(["symbol", "change_date"])
+            .drop_duplicates(["symbol", "change_date"], keep="last")
+            .reset_index(drop=True)
         )
 
     # --- Listing dates ----------------------------------------------------

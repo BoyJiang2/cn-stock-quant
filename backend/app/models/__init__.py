@@ -15,6 +15,7 @@ from app.models.pit import (
     IndexWeightSnapshot,
     ResearchPoolMember,
     SecurityName,
+    SecuritySTStatus,
     SecurityStatus,
     SecurityTradeGap,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "NewsItem",
     "ResearchPoolMember",
     "SecurityName",
+    "SecuritySTStatus",
     "SecurityStatus",
     "SecurityTradeGap",
     "Stock",

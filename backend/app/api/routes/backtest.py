@@ -35,19 +35,45 @@ def run_backtest(payload: BacktestRequest, session: Session = Depends(get_sessio
                     status_code=400,
                     detail="universe_as_of_date cannot be later than backtest start_date.",
                 )
+            # Initial PIT eligibility must not use bars from the future
+            # backtest period. Keep a fixed pre-start warm-up window only.
+            warmup_start = as_of_date - timedelta(days=180)
             pit_result = PitRepository(
                 session,
                 bar_reader=repository,
             ).select_research_symbols_pit(
                 as_of_date,
-                payload.start_date,
-                payload.end_date,
+                warmup_start,
+                as_of_date,
                 index_symbol=payload.pit_index_symbol,
                 st_policy=payload.pit_st_policy,
                 limit=payload.pool_max_symbols,
             )
+            warmup_degraded = False
+            if not pit_result.symbols and warmup_start < as_of_date:
+                # A run may begin at the first locally available date. In
+                # that case, retain PIT safety by using only the as-of day,
+                # rather than rejecting the run or peeking into future bars.
+                pit_result = PitRepository(
+                    session,
+                    bar_reader=repository,
+                ).select_research_symbols_pit(
+                    as_of_date,
+                    as_of_date,
+                    as_of_date,
+                    index_symbol=payload.pit_index_symbol,
+                    st_policy=payload.pit_st_policy,
+                    limit=payload.pool_max_symbols,
+                )
+                warmup_degraded = bool(pit_result.symbols)
             symbols = pit_result.symbols
-            universe_metadata = {"mode": "pit_fixed", **pit_result.meta}
+            universe_metadata = {
+                "mode": "pit_initial_universe",
+                "warmup_start": warmup_start.isoformat(),
+                "warmup_degraded": warmup_degraded,
+                "warning": "The universe is fixed at the backtest start; intraperiod status changes are not yet rebalanced.",
+                **pit_result.meta,
+            }
         else:
             # Prefer the trading-day-based selection that tolerates gaps,
             # weekends/holidays, end-of-data, and recently-listed stocks.

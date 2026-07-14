@@ -27,14 +27,22 @@ against the local package and live responses before assigning follow-up work.
 - `000001` resolves as listed from `1991-04-03` for 2024, 2025, and 2026
   PIT queries.
 
+## Completed ST Baseline
+
+- [x] Added `security_st_status` as an independent ST axis. A symbol can now
+  be both `listed` and `st_star` on the same date; the legacy mixed
+  `security_status` table remains readable for compatibility.
+- [x] Added Shenzhen name/ST history sync from `stock_info_sz_change_name`.
+  Change dates are stored as effective dates, while missing announcement dates
+  remain `NULL` with `medium` confidence and a degraded query flag.
+- [x] Updated PIT research-pool filtering to prefer explicit ST intervals and
+  only fall back to name prefixes when the ST axis is unavailable.
+- [x] Changed initial PIT backtests to use only an as-of warm-up window, never
+  future bars. The response now labels this as `pit_initial_universe` until
+  per-rebalance PIT rebuilding is implemented.
+
 ## Next Tasks
 
-- [ ] Add a separate ST-status history axis. Availability and ST are currently
-  overloaded in `security_status`; a listed stock must be representable as ST
-  at the same time.
-- [ ] Build Shenzhen name/ST history from `stock_info_sz_change_name`, using
-  change dates as effective dates and low confidence when announcement dates
-  are unavailable.
 - [ ] Build `399006` membership intervals from
   `index_detail_hist_adjust_cni`; retain `OLD` and additions, exclude removals
   and alternates.

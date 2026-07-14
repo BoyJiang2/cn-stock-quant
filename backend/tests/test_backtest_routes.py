@@ -667,7 +667,8 @@ def test_run_backtest_point_in_time_includes_historically_listed_stock():
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["selected_symbols"] == ["000001", "000002"]
-    assert body["universe_metadata"]["mode"] == "pit_fixed"
+    assert body["universe_metadata"]["mode"] == "pit_initial_universe"
+    assert body["universe_metadata"]["warmup_start"] == "2019-07-05"
     assert body["universe_metadata"]["pool_key"]
 
 

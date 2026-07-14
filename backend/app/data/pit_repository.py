@@ -54,12 +54,14 @@ from app.data.universe import UniverseSpec
 from app.models.pit import (
     PIT_CONFIDENCE_LEVELS,
     PIT_SECURITY_STATUSES,
+    PIT_ST_STATUSES,
     PIT_ST_POLICIES,
     PIT_TRADE_GAP_TYPES,
     IndexConstituent,
     IndexWeightSnapshot,
     ResearchPoolMember,
     SecurityName,
+    SecuritySTStatus,
     SecurityStatus,
     SecurityTradeGap,
 )
@@ -70,6 +72,7 @@ __all__ = [
     "PitNameRecord",
     "PitRepository",
     "PitSecurityStatus",
+    "PitSTStatus",
     "SecurityTradeGapRecord",
     "PitUniverseResult",
     "MarketDataRepositoryLike",
@@ -97,6 +100,20 @@ class PitSecurityStatus:
     confidence: str
     source: str
     delist_reason: str | None = None
+    degraded: bool = False
+
+
+@dataclass(frozen=True)
+class PitSTStatus:
+    """PIT ST tier of a single symbol on a single date."""
+
+    symbol: str
+    st_status: str
+    valid_from: date
+    valid_to: date | None
+    announced_at: date | None
+    confidence: str
+    source: str
     degraded: bool = False
 
 
@@ -307,6 +324,51 @@ class PitRepository:
         self.session.commit()
         return count
 
+    def upsert_security_st_status(self, rows: Iterable[dict[str, Any]]) -> int:
+        """Insert or replace independent :class:`SecuritySTStatus` rows."""
+        count = 0
+        normalized_rows = _deduplicate_rows(
+            rows,
+            lambda row: (
+                normalize_a_share_symbol(row["symbol"]),
+                str(row["st_status"]).strip().lower(),
+                _coerce_date(row["valid_from"]),
+            ),
+        )
+        for row in normalized_rows:
+            symbol = normalize_a_share_symbol(row["symbol"])
+            st_status = str(row["st_status"]).strip().lower()
+            if st_status not in PIT_ST_STATUSES:
+                raise ValueError(f"unknown ST status: {st_status!r}")
+            confidence = str(row.get("confidence", "high")).strip().lower()
+            if confidence not in PIT_CONFIDENCE_LEVELS:
+                raise ValueError(f"unknown confidence: {confidence!r}")
+            valid_from = _coerce_date(row["valid_from"])
+            valid_to = _coerce_optional_date(row.get("valid_to"))
+            _validate_interval(valid_from, valid_to)
+            announced_at = _coerce_optional_date(row.get("announced_at"))
+            self.session.execute(
+                SecuritySTStatus.__table__.delete().where(
+                    SecuritySTStatus.symbol == symbol,
+                    SecuritySTStatus.st_status == st_status,
+                    SecuritySTStatus.valid_from == valid_from,
+                )
+            )
+            self.session.add(
+                SecuritySTStatus(
+                    symbol=symbol,
+                    st_status=st_status,
+                    valid_from=valid_from,
+                    valid_to=valid_to,
+                    announced_at=announced_at,
+                    source=str(row.get("source", "unknown")),
+                    confidence=confidence,
+                )
+            )
+            count += 1
+        self.session.commit()
+        return count
+
     def upsert_security_name(self, rows: Iterable[dict[str, Any]]) -> int:
         """Insert or replace :class:`SecurityName` rows."""
         count = 0
@@ -418,6 +480,39 @@ class PitRepository:
             if normalize_a_share_symbol(row["symbol"]) not in unchanged
         ]
         return self.upsert_security_status(pending) if pending else 0
+
+    def reconcile_current_st_status(
+        self,
+        rows: Iterable[dict[str, Any]],
+        as_of: date,
+    ) -> int:
+        """Apply a current ST-axis snapshot while closing stale intervals."""
+        desired_rows = [dict(row) for row in rows]
+        desired = {
+            normalize_a_share_symbol(row["symbol"]): str(row["st_status"]).lower()
+            for row in desired_rows
+        }
+        unchanged: set[str] = set()
+        open_rows = list(
+            self.session.scalars(
+                select(SecuritySTStatus).where(SecuritySTStatus.valid_to.is_(None))
+            )
+        )
+        for existing in open_rows:
+            if desired.get(existing.symbol) == existing.st_status:
+                unchanged.add(existing.symbol)
+                continue
+            if existing.valid_from < as_of:
+                existing.valid_to = as_of
+            else:
+                self.session.delete(existing)
+        self.session.commit()
+        pending = [
+            row
+            for row in desired_rows
+            if normalize_a_share_symbol(row["symbol"]) not in unchanged
+        ]
+        return self.upsert_security_st_status(pending) if pending else 0
 
     def reconcile_current_names(
         self,
@@ -615,6 +710,94 @@ class PitRepository:
                     source=row.source,
                     delist_reason=row.delist_reason,
                     degraded=(row.announced_at is None),
+                )
+        return None
+
+    def availability_as_of(
+        self, symbol: str, as_of: date
+    ) -> PitSecurityStatus | None:
+        """Return the availability axis while excluding legacy ST tiers."""
+        return self._security_status_as_of(
+            symbol,
+            as_of,
+            statuses=("listed", "normal", "suspended", "delisted"),
+        )
+
+    def st_status_as_of(self, symbol: str, as_of: date) -> PitSTStatus | None:
+        """Return independent ST status, with a legacy-table fallback."""
+        symbol = normalize_a_share_symbol(symbol)
+        stmt = (
+            select(SecuritySTStatus)
+            .where(
+                SecuritySTStatus.symbol == symbol,
+                SecuritySTStatus.valid_from <= as_of,
+                or_(
+                    SecuritySTStatus.valid_to.is_(None),
+                    SecuritySTStatus.valid_to > as_of,
+                ),
+            )
+            .order_by(SecuritySTStatus.valid_from.desc())
+        )
+        for row in self.session.scalars(stmt):
+            announced = row.announced_at or row.valid_from
+            if announced <= as_of:
+                return PitSTStatus(
+                    symbol=row.symbol,
+                    st_status=row.st_status,
+                    valid_from=row.valid_from,
+                    valid_to=row.valid_to,
+                    announced_at=row.announced_at,
+                    confidence=row.confidence if row.announced_at else "medium",
+                    source=row.source,
+                    degraded=row.announced_at is None,
+                )
+        legacy = self._security_status_as_of(
+            symbol, as_of, statuses=("st", "sst", "st_star")
+        )
+        if legacy is None:
+            return None
+        return PitSTStatus(
+            symbol=legacy.symbol,
+            st_status=legacy.status,
+            valid_from=legacy.valid_from,
+            valid_to=legacy.valid_to,
+            announced_at=legacy.announced_at,
+            confidence=legacy.confidence,
+            source=legacy.source,
+            degraded=legacy.degraded,
+        )
+
+    def _security_status_as_of(
+        self, symbol: str, as_of: date, *, statuses: tuple[str, ...]
+    ) -> PitSecurityStatus | None:
+        symbol = normalize_a_share_symbol(symbol)
+        stmt = (
+            select(SecurityStatus)
+            .where(
+                SecurityStatus.symbol == symbol,
+                SecurityStatus.status.in_(statuses),
+                SecurityStatus.valid_from <= as_of,
+                or_(
+                    SecurityStatus.valid_to.is_(None),
+                    SecurityStatus.valid_to > as_of,
+                ),
+            )
+            .order_by(SecurityStatus.valid_from.desc())
+        )
+        for row in self.session.scalars(stmt):
+            announced = row.announced_at or row.valid_from
+            if announced <= as_of:
+                confidence = row.confidence if row.announced_at else "medium"
+                return PitSecurityStatus(
+                    symbol=row.symbol,
+                    status=row.status,
+                    valid_from=row.valid_from,
+                    valid_to=row.valid_to,
+                    announced_at=row.announced_at,
+                    confidence=confidence,
+                    source=row.source,
+                    delist_reason=row.delist_reason,
+                    degraded=row.announced_at is None,
                 )
         return None
 
@@ -831,6 +1014,9 @@ class PitRepository:
         pit_name_total = int(
             self.session.scalar(select(func.count(SecurityName.id))) or 0
         )
+        pit_st_total = int(
+            self.session.scalar(select(func.count(SecuritySTStatus.id))) or 0
+        )
         globally_degraded = pit_status_total == 0 and pit_name_total == 0
 
         # Build candidate universe (symbol, name_snapshot) pairs.
@@ -854,6 +1040,7 @@ class PitRepository:
         excluded: dict[str, int] = {}
         missing_status_rows = 0
         missing_name_rows = 0
+        missing_st_rows = 0
         eligible: list[tuple[str, int]] = []  # (symbol, bar_count)
         # Track per-symbol degradation: any snapshot fallback flips the
         # global ``pit_degraded`` flag on so callers can surface a
@@ -862,6 +1049,8 @@ class PitRepository:
 
         for symbol, snapshot_name in candidates:
             status = self.status_as_of(symbol, as_of)
+            availability = self.availability_as_of(symbol, as_of)
+            st_status = self.st_status_as_of(symbol, as_of)
             name_rec = self.name_as_of(symbol, as_of)
 
             if status is None:
@@ -869,6 +1058,10 @@ class PitRepository:
                 per_symbol_degraded = True
             if name_rec is None:
                 missing_name_rows += 1
+                if exclude_st:
+                    per_symbol_degraded = True
+            if st_status is None:
+                missing_st_rows += 1
                 if exclude_st:
                     per_symbol_degraded = True
 
@@ -879,19 +1072,19 @@ class PitRepository:
             # PIT table useful: symbols we have history for get the
             # correct PIT treatment, the rest inherit the snapshot
             # (which is correct for "today" and marked as degraded).
-            if status is not None:
-                if status.status == "delisted":
+            if availability is not None:
+                if availability.status == "delisted":
                     excluded["delisted"] = excluded.get("delisted", 0) + 1
                     continue
-                if status.status == "suspended":
+                if availability.status == "suspended":
                     excluded["suspended"] = excluded.get("suspended", 0) + 1
                     continue
-                if status.status not in _LISTED_STATUSES and status.status != "delisted":
+                if status is not None and status.status not in _LISTED_STATUSES and status.status != "delisted":
                     # ST / SST / *ST are regulatory cages, not delisting.
                     # Keep them in the candidate pool — the ST-name filter
                     # below decides whether they are eligible.
                     pass
-            else:
+            if availability is None and status is None:
                 # No PIT status row for this symbol — fall back to snapshot.
                 per_symbol_degraded = True
                 if not self._snapshot_is_active(symbol):
@@ -900,8 +1093,11 @@ class PitRepository:
 
             # --- Exclusion: ST / *ST prefix on PIT name -----------------
             if exclude_st:
-                name_to_check = name_rec.name if name_rec else None
-                if name_to_check is None:
+                if st_status is not None and st_status.st_status != "normal":
+                    excluded["st"] = excluded.get("st", 0) + 1
+                    continue
+                name_to_check = name_rec.name if st_status is None and name_rec else None
+                if name_to_check is None and st_status is None:
                     # No PIT name — act per st_policy.
                     if st_policy == "strict":
                         name_to_check = snapshot_name
@@ -946,8 +1142,10 @@ class PitRepository:
             "excluded": excluded,
             "missing_status_rows": missing_status_rows,
             "missing_name_rows": missing_name_rows,
+            "missing_st_rows": missing_st_rows,
             "pit_status_rows_total": pit_status_total,
             "pit_name_rows_total": pit_name_total,
+            "pit_st_status_rows_total": pit_st_total,
             "effective_min_trading_days": effective_min,
             "expected_trading_days": expected_count,
             "data_version": f"pit-v1-{as_of.isoformat()}",
@@ -1027,6 +1225,9 @@ class PitRepository:
         name_rows = int(
             self.session.scalar(select(func.count(SecurityName.id))) or 0
         )
+        st_rows = int(
+            self.session.scalar(select(func.count(SecuritySTStatus.id))) or 0
+        )
         status_missing_announced = int(
             self.session.scalar(
                 select(func.count(SecurityStatus.id)).where(
@@ -1039,6 +1240,14 @@ class PitRepository:
             self.session.scalar(
                 select(func.count(SecurityName.id)).where(
                     SecurityName.announced_at.is_(None)
+                )
+            )
+            or 0
+        )
+        st_missing_announced = int(
+            self.session.scalar(
+                select(func.count(SecuritySTStatus.id)).where(
+                    SecuritySTStatus.announced_at.is_(None)
                 )
             )
             or 0
@@ -1063,8 +1272,10 @@ class PitRepository:
         return {
             "security_status_rows": status_rows,
             "security_name_rows": name_rows,
+            "security_st_status_rows": st_rows,
             "status_missing_announced_at": status_missing_announced,
             "name_missing_announced_at": name_missing_announced,
+            "st_status_missing_announced_at": st_missing_announced,
             "index_constituent_rows": index_const_rows,
             "index_weight_snapshot_rows": weight_rows,
             "security_trade_gap_rows": trade_gap_rows,

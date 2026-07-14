@@ -301,6 +301,20 @@ def test_pit_universe_includes_delisted_stock_in_historical_window(pit, session)
             for sym in ("000001", "000002", "000003", "000004")
         ]
     )
+    pit.upsert_security_st_status(
+        [
+            {
+                "symbol": sym,
+                "st_status": "normal",
+                "valid_from": date(2000, 1, 1),
+                "valid_to": None,
+                "announced_at": date(2000, 1, 1),
+                "source": "test",
+                "confidence": "high",
+            }
+            for sym in ("000001", "000002", "000003", "000004")
+        ]
+    )
 
     result = pit.select_research_symbols_pit(
         as_of=date(2020, 6, 1),
@@ -787,6 +801,7 @@ class _FakeProvider:
         listed: pd.DataFrame | None = None,
         sh_delist: pd.DataFrame | None = None,
         sz_delist: pd.DataFrame | None = None,
+        sz_name_changes: pd.DataFrame | None = None,
         index_cons: pd.DataFrame | None = None,
         index_weights: pd.DataFrame | None = None,
     ):
@@ -801,6 +816,13 @@ class _FakeProvider:
         )
         self._sz = sz_delist if sz_delist is not None else pd.DataFrame(
             columns=["symbol", "name", "list_date", "delist_date", "source"]
+        )
+        self._sz_name_changes = (
+            sz_name_changes
+            if sz_name_changes is not None
+            else pd.DataFrame(
+                columns=["symbol", "previous_name", "name", "change_date", "source"]
+            )
         )
         self._index_cons = index_cons if index_cons is not None else pd.DataFrame(
             columns=["index_symbol", "symbol", "name", "snapshot_date", "source"]
@@ -820,6 +842,9 @@ class _FakeProvider:
 
     def sz_delist(self):
         return self._sz
+
+    def sz_name_changes(self):
+        return self._sz_name_changes
 
     def index_constituents_current(self, index_symbol):
         df = self._index_cons.copy()
@@ -1339,6 +1364,99 @@ def test_upsert_security_trade_gap_rejects_unknown_gap_type(pit):
 
 
 # ---------------------------------------------------------------------------
+# Dual-axis ST state
+# ---------------------------------------------------------------------------
+
+
+def test_availability_and_st_axes_overlap_without_losing_listed_state(pit):
+    pit.upsert_security_status(
+        [{
+            "symbol": "000001",
+            "status": "listed",
+            "valid_from": date(2010, 1, 1),
+            "valid_to": None,
+            "announced_at": date(2010, 1, 1),
+            "source": "test",
+            "confidence": "high",
+        }]
+    )
+    pit.upsert_security_st_status(
+        [{
+            "symbol": "000001",
+            "st_status": "st_star",
+            "valid_from": date(2024, 1, 2),
+            "valid_to": None,
+            "announced_at": None,
+            "source": "test",
+            "confidence": "medium",
+        }]
+    )
+
+    availability = pit.availability_as_of("000001", date(2024, 6, 1))
+    st_status = pit.st_status_as_of("000001", date(2024, 6, 1))
+
+    assert availability is not None and availability.status == "listed"
+    assert st_status is not None and st_status.st_status == "st_star"
+    assert st_status.degraded is True
+
+
+def test_explicit_st_excludes_without_historical_name(pit, session):
+    _seed_stock(session, "000001", "Current Normal Name", "SZ")
+    _seed_bars(session, "000001", date(2024, 1, 2), date(2024, 1, 31))
+    pit.upsert_security_status(
+        [{
+            "symbol": "000001",
+            "status": "listed",
+            "valid_from": date(2010, 1, 1),
+            "valid_to": None,
+            "announced_at": date(2010, 1, 1),
+            "source": "test",
+            "confidence": "high",
+        }]
+    )
+    pit.upsert_security_st_status(
+        [{
+            "symbol": "000001",
+            "st_status": "st",
+            "valid_from": date(2024, 1, 1),
+            "valid_to": None,
+            "announced_at": None,
+            "source": "test",
+            "confidence": "medium",
+        }]
+    )
+
+    result = pit.select_research_symbols_pit(
+        as_of=date(2024, 1, 15),
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        exchanges=("SZ",),
+        limit=10,
+    )
+
+    assert result.symbols == []
+    assert result.meta["excluded"]["st"] == 1
+
+
+def test_security_name_history_sync_writes_independent_st_intervals(pit):
+    provider = _FakeProvider(
+        sz_name_changes=pd.DataFrame(
+            [
+                {"symbol": "000001", "previous_name": "Example", "name": "ST Example", "change_date": date(2021, 1, 4), "source": "test"},
+                {"symbol": "000001", "previous_name": "ST Example", "name": "Example", "change_date": date(2022, 1, 4), "source": "test"},
+            ]
+        )
+    )
+
+    summary = PitSyncCoordinator(pit, provider).sync_security_name_history()
+
+    assert summary.extras == {"name_changes": 2, "st_intervals": 2}
+    assert pit.st_status_as_of("000001", date(2021, 6, 1)).st_status == "st"
+    normal = pit.st_status_as_of("000001", date(2022, 6, 1))
+    assert normal is not None and normal.st_status == "normal"
+
+
+# ---------------------------------------------------------------------------
 # Coverage report
 # ---------------------------------------------------------------------------
 
@@ -1498,6 +1616,47 @@ def test_pit_security_status_endpoint_returns_status(session_factory):
     assert body["status"] == "listed"
     assert body["confidence"] == "high"
     assert body["degraded"] is False
+
+
+def test_pit_security_status_endpoint_exposes_two_axes(session_factory):
+    s = session_factory()
+    try:
+        pit = PitRepository(s)
+        pit.upsert_security_status(
+            [{
+                "symbol": "000001",
+                "status": "listed",
+                "valid_from": date(1991, 4, 3),
+                "valid_to": None,
+                "announced_at": date(1991, 4, 3),
+                "source": "test",
+                "confidence": "high",
+            }]
+        )
+        pit.upsert_security_st_status(
+            [{
+                "symbol": "000001",
+                "st_status": "st_star",
+                "valid_from": date(2024, 1, 2),
+                "valid_to": None,
+                "announced_at": None,
+                "source": "test",
+                "confidence": "medium",
+            }]
+        )
+    finally:
+        s.close()
+
+    response = _client_with(session_factory).get(
+        "/api/data/pit/security-status",
+        params={"symbol": "000001", "as_of": "2024-06-01"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "listed"
+    assert body["availability_status"] == "listed"
+    assert body["st_status"] == "st_star"
 
 
 def test_pit_index_constituents_endpoint_404_when_empty(session_factory):

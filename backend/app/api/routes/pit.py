@@ -52,6 +52,7 @@ from app.schemas.pit import (
     PitSyncIndexWeightsRequest,
     PitSyncIndexWeightsResponse,
     PitSyncSecurityDelistResponse,
+    PitSyncSecurityNameHistoryResponse,
     PitSyncSecurityNamesResponse,
     PitSyncSecurityStatusResponse,
 )
@@ -122,6 +123,30 @@ def sync_security_names(session: Session = Depends(get_session)) -> PitSyncSecur
         ) from exc
     return PitSyncSecurityNamesResponse(
         synced=summary.records,
+        source=coordinator.config.default_source,
+    )
+
+
+@router.post(
+    "/sync/security-name-history",
+    response_model=PitSyncSecurityNameHistoryResponse,
+)
+def sync_security_name_history(
+    session: Session = Depends(get_session),
+) -> PitSyncSecurityNameHistoryResponse:
+    coordinator = _make_coordinator(session)
+    try:
+        summary = coordinator.sync_security_name_history()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"PIT Shenzhen name-history sync failed: {exc}",
+        ) from exc
+    extras = summary.extras
+    return PitSyncSecurityNameHistoryResponse(
+        synced=summary.records,
+        name_changes=int(extras.get("name_changes", 0)),
+        st_intervals=int(extras.get("st_intervals", 0)),
         source=coordinator.config.default_source,
     )
 
@@ -231,9 +256,13 @@ def get_security_status(
             detail=f"No PIT status for {normalized} on or before {as_of}.",
         )
     name = pit.name_as_of(normalized, as_of)
+    availability = pit.availability_as_of(normalized, as_of)
+    st_status = pit.st_status_as_of(normalized, as_of)
     return PitSecurityStatusOut(
         symbol=status.symbol,
         status=status.status,
+        availability_status=availability.status if availability else None,
+        st_status=st_status.st_status if st_status else None,
         valid_from=status.valid_from,
         valid_to=status.valid_to,
         announced_at=status.announced_at,

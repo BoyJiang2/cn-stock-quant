@@ -8,7 +8,8 @@ importing current-snapshot survivorship or look-ahead bias.
 
 Tables
 ------
-* :class:`SecurityStatus`        -- listed / delisted / st / suspended intervals
+* :class:`SecurityStatus`        -- legacy mixed status intervals
+* :class:`SecuritySTStatus`      -- independent ST regulatory-status intervals
 * :class:`SecurityName`          -- security name history (with ST/*ST prefix)
 * :class:`IndexConstituent`      -- index membership intervals (CSI semi-annual)
 * :class:`IndexWeightSnapshot`   -- index weight snapshots (per rebalance date)
@@ -45,12 +46,15 @@ from app.models.entities import Base
 
 __all__ = [
     "SecurityStatus",
+    "SecuritySTStatus",
     "SecurityName",
     "IndexConstituent",
     "IndexWeightSnapshot",
     "SecurityTradeGap",
     "ResearchPoolMember",
     "PIT_SECURITY_STATUSES",
+    "PIT_AVAILABILITY_STATUSES",
+    "PIT_ST_STATUSES",
     "PIT_CONFIDENCE_LEVELS",
     "PIT_ST_POLICIES",
     "PIT_TRADE_GAP_TYPES",
@@ -63,6 +67,14 @@ __all__ = [
 PIT_SECURITY_STATUSES: frozenset[str] = frozenset(
     {"listed", "normal", "st", "sst", "st_star", "suspended", "delisted"}
 )
+
+# New PIT rows separate whether a security can trade from its ST tier.  The
+# legacy ``security_status`` table remains supported because existing syncs
+# and backtests still read its mixed vocabulary.
+PIT_AVAILABILITY_STATUSES: frozenset[str] = frozenset(
+    {"listed", "normal", "suspended", "delisted"}
+)
+PIT_ST_STATUSES: frozenset[str] = frozenset({"normal", "st", "sst", "st_star"})
 
 # Confidence bucket that travels with every PIT row.  ``high`` requires an
 # explicit ``announced_at`` from the source; ``medium`` falls back to
@@ -122,6 +134,34 @@ class SecurityStatus(Base):
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     announced_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     delist_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(8), nullable=False, default="high")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class SecuritySTStatus(Base):
+    """Time interval for a security's independent ST regulatory tier.
+
+    Each row follows the same half-open ``[valid_from, valid_to)`` and
+    announcement-date semantics as :class:`SecurityStatus`.  ``normal`` is
+    explicit so an ST exit can be represented without deleting history.
+    """
+
+    __tablename__ = "security_st_status"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol", "st_status", "valid_from", name="uq_sec_st_status_symbol_from"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
+    st_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    announced_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[str] = mapped_column(String(8), nullable=False, default="high")
     updated_at: Mapped[datetime] = mapped_column(

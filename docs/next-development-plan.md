@@ -342,7 +342,7 @@ Canonical checklist view:
 ### P3: Point-In-Time And Data Trustworthiness
 
 - [ ] P3-1 Historical listing/delisting table
-- [ ] P3-2 Historical ST/risk table
+- [x] P3-2 Historical ST/risk table
 - [ ] P3-3 Historical index constituents
 - [ ] P3-4 PIT universe selector
 - [x] P3-5 Gap classification schema/repository skeleton
@@ -448,7 +448,7 @@ Goal: reduce false confidence from survivorship and future-data assumptions.
 | ID | Task | Owner | Status | Output | Acceptance Criteria | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | P3-1 | Historical listing/delisting table | GLM + Codex | done | PIT status intervals and AkShare sync | Backtest can know listed/delisted status by date | 2026-07-14: normalized provider listing dates; synced 5,280 listed and 726 delist intervals |
-| P3-2 | Historical ST/risk table | GLM + DeepSeek + Codex | doing | Separate ST axis and SZ name-change sync | Strategy can exclude known ST as-of date | Use dated `stock_info_sz_change_name`; current ST is forward-only |
+| P3-2 | Historical ST/risk table | GLM + DeepSeek + Codex | done | Separate ST axis, SZ name-change sync, and dual-axis research-pool filter | Strategy can exclude known ST as-of date | 2026-07-14: added `security_st_status`; SZ history has unknown announcement dates and remains degraded research data |
 | P3-3 | Historical index constituents | GLM + Codex | doing | `399006` historical intervals | Can build a historical ChiNext universe | AkShare has `399006` adjustment history; `000300/000905/000852` still require CSI archive/Tushare |
 | P3-4 | PIT universe selector | Codex | todo | `get_tradeable_universe(as_of_date)` | Backtest can request tradable universe for each date | Integrate after P3-1/P3-2 |
 | P3-5 | Gap classification | Codex | todo | Data quality report upgrade | Missing bars classified where possible | Suspension vs listing vs provider gap |
