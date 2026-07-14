@@ -159,7 +159,10 @@ Current local check:
 - [x] Run first price-only vs price-plus-news-risk-filter comparison
 - [ ] Add duplicate clustering by URL/title similarity
 - [ ] Add source coverage report by symbol/date/event type
-- [ ] Split event taxonomy into severe company-specific, company-risk, industry-flow, and market-flow
+- [x] Split event taxonomy into severe company-specific, company-risk, industry-flow, and market-flow
+- [x] Preserve first `fetched_at` and load observed-time windows without dropping delayed feeds
+- [x] Add event-type-aware ML Score Rank blocking and comparison reporting
+- [ ] Add company-subject/entity validation before treating keyword matches as production risk events
 
 ## Batch Sync Commands
 
@@ -216,3 +219,54 @@ Interpretation:
 - The 100-symbol pool was unstable: same-day filtering helped slightly, longer
   lookbacks hurt. This suggests the classifier is too broad and should separate
   severe company-specific events from generic industry/market fund-flow news.
+
+## Event Taxonomy v2 Results
+
+Run date: 2026-07-14.
+
+The initial `risk_news` label was too broad: it treated sector fund flows,
+market moves, and weak company-risk mentions as direct reasons to avoid an
+individual stock. The classifier now emits:
+
+- `severe_company_risk`: investigation, confirmed penalty, financial fraud,
+  debt default/overdue debt, insolvency/bankruptcy, or forced delisting.
+- `company_risk`: operating loss, shareholder reduction, regulatory letter,
+  or similar company-level concern. It is observation-only by default.
+- `industry_market_flow`: sector/market capital-flow news. Never default-blocked.
+- `general_market_sentiment`: market move or trading-abnormality news. Never
+  default-blocked.
+- `neutral`: no current risk classification.
+
+The default `ml_score_rank` block list is now only
+`severe_company_risk`. A caller may explicitly add `company_risk`; empty event
+types retain the old sentiment-based compatibility behavior. Phrases such as
+`预亏变预盈`, `亏损收窄`, `胜诉`, `退市新规`, `减持新规`, `异动拉升`,
+and `涨停` are explicitly excluded from negative classification.
+
+Historical reclassification command:
+
+```powershell
+python backend\reclassify_news_events.py --dry-run
+python backend\reclassify_news_events.py
+```
+
+Local reclassification result over 1,346 persisted news rows:
+
+- `severe_company_risk`: 9
+- `company_risk`: 71
+- `industry_market_flow`: 114
+- `general_market_sentiment`: 18
+- `neutral`: 1,134
+
+300-symbol retrospective research comparison, 2026-01-05..2026-06-10,
+`published_at`, 3-day lookback:
+
+| Block policy | Return delta | Max drawdown delta | Sharpe delta | Conclusion |
+| --- | ---: | ---: | ---: | --- |
+| `severe_company_risk` | +0.0312% | 0.0000% | +0.0044 | Too small to promote; preserves a conservative default. |
+| `severe_company_risk,company_risk` | +0.1078% | +0.0782% | +0.0137 | Mildly positive, but still too small and retrospective-only. |
+
+These are not live-readiness results. They use `published_at` to study the
+historical public feed. The default live-safe `observed` mode uses the first
+time the system actually fetched the record and remains the only valid mode for
+paper/live conclusions.

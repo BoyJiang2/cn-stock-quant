@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--negative-news-min-relevance", type=float, default=0.0)
     parser.add_argument("--negative-news-max-sentiment", type=float, default=-0.2)
     parser.add_argument(
+        "--negative-news-event-types",
+        default="severe_company_risk",
+        help="Comma-separated event types to block. Empty uses legacy sentiment-based filtering.",
+    )
+    parser.add_argument(
         "--news-availability",
         choices=["observed", "published_at"],
         default="observed",
@@ -107,11 +112,19 @@ def run_comparison(args: argparse.Namespace) -> dict[str, Any]:
             "benchmark_symbol": args.benchmark_symbol if benchmark_bars is not None else None,
             "news_lookback_days": args.negative_news_lookback_days,
             "news_availability": args.news_availability,
+            "negative_news_event_types": sorted(
+                _event_type_set(args.negative_news_event_types)
+            ),
             "news_rows": int(len(news_history)) if news_history is not None else 0,
             "timing_seconds": round(time.time() - started_at, 3),
         },
         "news_risk": _news_risk_summary(news_history),
-        "filtered_symbols": _filtered_symbols_summary(news_history),
+        "filtered_symbols": _filtered_symbols_summary(
+            news_history,
+            event_types=_event_type_set(args.negative_news_event_types),
+            min_relevance=args.negative_news_min_relevance,
+            max_sentiment=args.negative_news_max_sentiment,
+        ),
         "runs": runs,
         "comparison": _comparison(runs["baseline"], runs["db_news_filter"]),
     }
@@ -151,6 +164,7 @@ def _strategy_params(args: argparse.Namespace) -> dict[str, Any]:
         "negative_news_lookback_days": args.negative_news_lookback_days,
         "negative_news_min_relevance": args.negative_news_min_relevance,
         "negative_news_max_sentiment": args.negative_news_max_sentiment,
+        "negative_news_event_types": args.negative_news_event_types,
     }
 
 
@@ -164,8 +178,16 @@ def _load_news_history(
         datetime_time.min,
     )
     end_at = datetime.combine(args.end_date, datetime_time.max)
+    use_observed_window = args.news_availability == "observed"
     frames = [
-        repository.news_items(symbol=symbol, start_at=start_at, end_at=end_at, limit=5000)
+        repository.news_items(
+            symbol=symbol,
+            start_at=None if use_observed_window else start_at,
+            end_at=None if use_observed_window else end_at,
+            known_start_at=start_at if use_observed_window else None,
+            known_end_at=end_at if use_observed_window else None,
+            limit=5000,
+        )
         for symbol in symbols
     ]
     frames = [frame for frame in frames if not frame.empty]
@@ -254,13 +276,30 @@ def _news_risk_summary(news_history: pd.DataFrame | None) -> dict[str, Any]:
         "risk_rows": int(len(risk_frame)),
         "risk_symbol_count": len(symbols),
         "risk_symbols": symbols[:50],
+        "event_type_counts": {
+            str(event_type): int(count)
+            for event_type, count in frame["event_type"].fillna("").value_counts().items()
+        }
+        if "event_type" in frame.columns
+        else {},
     }
 
 
-def _filtered_symbols_summary(news_history: pd.DataFrame | None) -> list[dict[str, Any]]:
+def _filtered_symbols_summary(
+    news_history: pd.DataFrame | None,
+    *,
+    event_types: set[str] | None = None,
+    min_relevance: float = 0.0,
+    max_sentiment: float = -0.2,
+) -> list[dict[str, Any]]:
     if news_history is None or news_history.empty:
         return []
-    risk_frame = _risk_news_frame(news_history)
+    risk_frame = _risk_news_frame(
+        news_history,
+        event_types=event_types or set(),
+        min_relevance=min_relevance,
+        max_sentiment=max_sentiment,
+    )
     if risk_frame.empty:
         return []
     rows: list[dict[str, Any]] = []
@@ -286,7 +325,13 @@ def _filtered_symbols_summary(news_history: pd.DataFrame | None) -> list[dict[st
     return rows
 
 
-def _risk_news_frame(news_history: pd.DataFrame) -> pd.DataFrame:
+def _risk_news_frame(
+    news_history: pd.DataFrame,
+    *,
+    event_types: set[str],
+    min_relevance: float,
+    max_sentiment: float,
+) -> pd.DataFrame:
     frame = news_history.copy()
     if "known_at" not in frame.columns:
         frame["published_at"] = pd.to_datetime(frame.get("published_at"), errors="coerce")
@@ -297,12 +342,23 @@ def _risk_news_frame(news_history: pd.DataFrame) -> pd.DataFrame:
     event = frame.get("event_type", pd.Series("", index=frame.index)).astype(str).str.lower()
     label = frame.get("sentiment_label", pd.Series("", index=frame.index)).astype(str).str.lower()
     score = pd.to_numeric(frame.get("sentiment_score", pd.Series(pd.NA, index=frame.index)), errors="coerce")
+    relevance = pd.to_numeric(
+        frame.get("relevance_score", pd.Series(1.0, index=frame.index)), errors="coerce"
+    ).fillna(0.0)
     risk = (
-        event.isin({"negative_news", "risk_news"})
-        | label.isin({"negative", "risk", "bearish", "bad"})
-        | (score <= -0.2)
+        event.isin(event_types)
+        if event_types
+        else (
+            event.isin({"negative_news", "risk_news"})
+            | label.isin({"negative", "risk", "bearish", "bad"})
+            | (score <= max_sentiment)
+        )
     )
-    return frame[risk].dropna(subset=["symbol", "known_at"]).copy()
+    return frame[risk & (relevance >= min_relevance)].dropna(subset=["symbol", "known_at"]).copy()
+
+
+def _event_type_set(value: str) -> set[str]:
+    return {item.strip().lower() for item in value.split(",") if item.strip()}
 
 
 def _comparison(baseline: dict[str, Any], news_filter: dict[str, Any]) -> dict[str, Any]:
@@ -363,6 +419,7 @@ def to_markdown(report: dict[str, Any]) -> str:
         f"- end: `{report['metadata']['end_date']}`",
         f"- selected_symbol_count: `{report['metadata']['selected_symbol_count']}`",
         f"- news_availability: `{report['metadata'].get('news_availability', 'observed')}`",
+        f"- blocked_event_types: `{', '.join(report['metadata'].get('negative_news_event_types', [])) or 'legacy sentiment filter'}`",
         f"- news_risk_symbols: `{report['news_risk']['risk_symbol_count']}`",
         "",
         "## Runs",

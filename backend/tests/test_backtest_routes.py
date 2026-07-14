@@ -276,6 +276,7 @@ def test_run_backtest_ml_score_rank_uses_db_negative_news(tmp_path):
                 "min_price": 1,
                 "use_db_negative_news": True,
                 "negative_news_lookback_days": 30,
+                "negative_news_event_types": "negative_news",
             },
         },
     )
@@ -330,6 +331,7 @@ def test_run_backtest_ml_score_rank_news_availability_published_at_mode(tmp_path
                     "use_db_negative_news": True,
                     "news_availability": mode,
                     "negative_news_lookback_days": 30,
+                    "negative_news_event_types": "negative_news",
                 },
             },
         )

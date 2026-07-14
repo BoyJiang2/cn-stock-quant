@@ -194,11 +194,15 @@ def _load_negative_news_history(
     lookback_days = max(0, int(params.get("negative_news_lookback_days", 3)))
     start_at = datetime.combine(start_date - timedelta(days=lookback_days), time.min)
     end_at = datetime.combine(end_date, time.max)
+    availability_mode = str(params.get("news_availability", "observed")).strip().lower()
+    use_observed_window = availability_mode in {"observed", "fetched", "fetched_at", "live"}
     frames = [
         repository.news_items(
             symbol=symbol,
-            start_at=start_at,
-            end_at=end_at,
+            start_at=None if use_observed_window else start_at,
+            end_at=None if use_observed_window else end_at,
+            known_start_at=start_at if use_observed_window else None,
+            known_end_at=end_at if use_observed_window else None,
             limit=5000,
         )
         for symbol in symbols

@@ -470,8 +470,10 @@ Goal: add event/sentiment data as a risk filter first, alpha later.
 | P4-8 | News text quality repair | Codex | done | Cleaning module + repair script | Mojibake news text is cleaned before provider/storage/API use | `backend/app/data/news_text.py`, `backend/repair_news_text.py` |
 | P4-9 | Batch news sync CLI and coverage report | Codex | done | `backend/sync_news.py` | Can batch sync manual/research-pool symbols and output JSON/Markdown coverage | Dry-run and single-symbol live sync verified |
 | P4-10 | Research-pool news coverage expansion | GLM + Codex | done | Batch sync run artifacts | Research pool has enough news rows for 2026 backtests | 300 symbols: 1828 news rows, 364 risk rows, 0 failed |
-| P4-11 | News filter validation grid | Codex + DeepSeek | done | Comparison reports | Price-only vs news-risk-filter compared on 2026 ML strategy | `published_at + lookback=3` improved return/DD on 300-symbol pool |
-| P4-12 | News event classifier refinement | DeepSeek + Codex | todo | Better event taxonomy | Separate severe events from broad market/industry flow news | Current risk rule is too broad for smaller pools |
+| P4-11 | News filter validation grid | Codex + DeepSeek | done | Comparison reports | Price-only vs news-risk-filter compared on 2026 ML strategy | `published_at + lookback=3` improved return/DD on 300-symbol pool; not live evidence |
+| P4-12 | News event classifier refinement | DeepSeek + Codex | done | Event taxonomy + historical reclassification | Separate severe events from broad market/industry flow news | Default now blocks only `severe_company_risk`; event-type comparison added |
+| P4-13 | Entity-aware severe-news classifier | GLM + DeepSeek + Codex | todo | Company-subject and negation checks | Hard blocks require target-company relevance and explicit adverse event | Keyword v2 still needs stronger entity resolution |
+| P4-14 | News policy OOS validation | Codex + DeepSeek | todo | Multi-period observed/published report | Retrospective benefit must repeat; observed mode remains non-leaky | Do not promote current small deltas |
 
 ### P5: Factor Expansion
 

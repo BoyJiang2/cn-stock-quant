@@ -3,6 +3,7 @@ import pandas as pd
 from compare_ml_news_filter import (
     _apply_news_availability,
     _comparison,
+    _event_type_set,
     _filtered_symbols_summary,
     _news_risk_summary,
     to_markdown,
@@ -100,6 +101,38 @@ def test_filtered_symbols_summary_groups_risk_news_by_symbol():
     assert summary[0]["blocked_days"] == 2
     assert summary[0]["news_count"] == 2
     assert summary[0]["latest_title"] == "risk two"
+
+
+def test_filtered_symbols_summary_can_use_selected_event_types_only():
+    frame = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "known_at": "2026-05-20 10:00:00",
+                "event_type": "severe_company_risk",
+                "sentiment_label": "negative",
+                "sentiment_score": -0.8,
+                "relevance_score": 1.0,
+                "title": "investigation",
+            },
+            {
+                "symbol": "000002",
+                "known_at": "2026-05-20 10:00:00",
+                "event_type": "industry_market_flow",
+                "sentiment_label": "risk",
+                "sentiment_score": -0.4,
+                "relevance_score": 1.0,
+                "title": "outflow",
+            },
+        ]
+    )
+
+    summary = _filtered_symbols_summary(
+        frame,
+        event_types=_event_type_set(" severe_company_risk,SEVERE_COMPANY_RISK "),
+    )
+
+    assert [row["symbol"] for row in summary] == ["000001"]
 
 
 def test_apply_news_availability_can_use_published_at_for_research_mode():

@@ -126,6 +126,7 @@ class MarketDataRepository:
                     NewsItem.source_id == source_id,
                 )
             )
+            is_new = existing is None
             item = existing or NewsItem(
                 source=source,
                 source_id=source_id,
@@ -142,7 +143,8 @@ class MarketDataRepository:
             item.sentiment_score = _optional_float(row.get("sentiment_score"))
             item.relevance_score = _optional_float(row.get("relevance_score"))
             item.published_at = published_at
-            item.fetched_at = fetched_at
+            if is_new:
+                item.fetched_at = fetched_at
             item.raw = _raw_to_text(row.get("raw"))
             item.updated_at = datetime.utcnow()
             self.session.merge(item)
@@ -156,6 +158,8 @@ class MarketDataRepository:
         symbol: str | None = None,
         start_at: datetime | None = None,
         end_at: datetime | None = None,
+        known_start_at: datetime | None = None,
+        known_end_at: datetime | None = None,
         source: str | None = None,
         limit: int = 200,
     ) -> pd.DataFrame:
@@ -168,6 +172,18 @@ class MarketDataRepository:
             stmt = stmt.where(NewsItem.published_at >= start_at)
         if end_at is not None:
             stmt = stmt.where(NewsItem.published_at <= end_at)
+        if known_start_at is not None:
+            stmt = stmt.where(
+                or_(
+                    NewsItem.published_at >= known_start_at,
+                    NewsItem.fetched_at >= known_start_at,
+                )
+            )
+        if known_end_at is not None:
+            stmt = stmt.where(
+                NewsItem.published_at <= known_end_at,
+                NewsItem.fetched_at <= known_end_at,
+            )
         stmt = stmt.order_by(NewsItem.published_at.desc(), NewsItem.id.desc()).limit(
             max(1, min(int(limit), 5000))
         )

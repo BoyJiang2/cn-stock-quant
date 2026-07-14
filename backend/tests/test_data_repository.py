@@ -349,7 +349,33 @@ def test_repository_upserts_and_queries_news_items():
     assert pingan.iloc[0]["source_id"] == "em-1"
     assert pingan.iloc[0]["symbol"] == "000001"
     assert pingan.iloc[0]["title"] == "Updated title"
+    assert pingan.iloc[0]["fetched_at"] == datetime(2024, 1, 2, 9, 35)
     assert len(all_items) == 2
+
+
+def test_repository_queries_delayed_news_by_observed_time():
+    repository = make_repository()
+    repository.upsert_news_items(
+        pd.DataFrame(
+            [
+                {
+                    "source": "eastmoney_stock_news",
+                    "source_id": "delayed-1",
+                    "symbol": "000001",
+                    "title": "Delayed feed item",
+                    "published_at": datetime(2024, 1, 1, 9, 30),
+                    "fetched_at": datetime(2024, 1, 5, 9, 30),
+                }
+            ]
+        )
+    )
+
+    items = repository.news_items(
+        known_start_at=datetime(2024, 1, 5),
+        known_end_at=datetime(2024, 1, 5, 23, 59, 59),
+    )
+
+    assert items["source_id"].tolist() == ["delayed-1"]
 
 
 def test_repository_rejects_news_items_without_required_timestamps():

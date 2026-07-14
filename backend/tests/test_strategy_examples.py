@@ -372,8 +372,8 @@ def test_ml_score_rank_can_filter_trade_gap_and_negative_news(tmp_path):
     news_path.write_text(
         "\n".join(
             [
-                "symbol,published_at,fetched_at,sentiment_label,sentiment_score,relevance_score",
-                "000002,2024-01-02T09:00:00,2024-01-02T09:01:00,negative,-0.8,1.0",
+                "symbol,published_at,fetched_at,event_type,sentiment_label,sentiment_score,relevance_score",
+                "000002,2024-01-02T09:00:00,2024-01-02T09:01:00,severe_company_risk,negative,-0.8,1.0",
             ]
         ),
         encoding="utf-8",
@@ -437,7 +437,7 @@ def test_ml_score_rank_can_filter_database_negative_news(tmp_path):
                 "symbol": "000001",
                 "published_at": "2024-01-04 15:00:00",
                 "fetched_at": "2024-01-04 15:10:00",
-                "event_type": "risk_news",
+                "event_type": "company_risk",
                 "sentiment_label": "risk",
                 "sentiment_score": -0.4,
                 "relevance_score": 1.0,
@@ -473,6 +473,7 @@ def test_ml_score_rank_can_filter_database_negative_news(tmp_path):
                 "min_price": 1,
                 "use_db_negative_news": True,
                 "negative_news_lookback_days": 3,
+                "negative_news_event_types": "company_risk",
             },
             news_history=news,
         ),
@@ -481,6 +482,83 @@ def test_ml_score_rank_can_filter_database_negative_news(tmp_path):
 
     assert weights["000001"] == 0.0
     assert weights["000002"] == 0.5
+
+
+def test_ml_score_rank_can_filter_selected_news_event_types(tmp_path):
+    current = date(2024, 1, 5)
+    score_path = tmp_path / "scores.csv"
+    score_path.write_text(
+        "\n".join(
+            [
+                "trade_date,symbol,score",
+                "2024-01-05,000001,0.90",
+                "2024-01-05,000002,0.80",
+                "2024-01-05,000003,0.70",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    news = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "published_at": "2024-01-04 15:00:00",
+                "fetched_at": "2024-01-04 15:10:00",
+                "event_type": "severe_company_risk",
+                "sentiment_label": "negative",
+                "sentiment_score": -0.8,
+                "relevance_score": 1.0,
+            },
+            {
+                "symbol": "000002",
+                "published_at": "2024-01-04 15:00:00",
+                "fetched_at": "2024-01-04 15:10:00",
+                "event_type": "industry_market_flow",
+                "sentiment_label": "risk",
+                "sentiment_score": -0.4,
+                "relevance_score": 1.0,
+            },
+        ]
+    )
+    bars = pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "trade_date": current,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 100_000,
+                "amount": 100_000_000,
+            }
+            for symbol in ["000001", "000002", "000003"]
+        ]
+    )
+
+    weights = MLScoreRankStrategy().generate_target_weights(
+        StrategyContext(
+            current_date=current,
+            cash=100_000,
+            params={
+                "scores_path": str(score_path),
+                "top_n": 1,
+                "max_position_weight": 0.5,
+                "max_total_weight": 0.5,
+                "min_avg_amount_20d": 0,
+                "min_price": 1,
+                "use_db_negative_news": True,
+                "negative_news_lookback_days": 3,
+                "negative_news_event_types": "severe_company_risk",
+            },
+            news_history=news,
+        ),
+        bars,
+    )
+
+    assert weights["000001"] == 0.0
+    assert weights["000002"] == 0.5
+    assert weights["000003"] == 0.0
 
 
 def test_stable_reversal_selects_stable_oversold_liquid_symbols():

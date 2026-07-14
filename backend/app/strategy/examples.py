@@ -1128,6 +1128,12 @@ class MLScoreRankStrategy(Strategy):
         StrategyParameter("negative_news_lookback_days", "Negative-news lookback days", "int", 3, min=0, step=1),
         StrategyParameter("negative_news_min_relevance", "Negative-news relevance floor", "float", 0.0, min=0.0, max=1.0, step=0.05),
         StrategyParameter("negative_news_max_sentiment", "Negative sentiment score cap", "float", -0.2, step=0.05),
+        StrategyParameter(
+            "negative_news_event_types",
+            "Blocked news event types (comma separated)",
+            "str",
+            "severe_company_risk",
+        ),
     ]
 
     def generate_target_weights(
@@ -1168,6 +1174,9 @@ class MLScoreRankStrategy(Strategy):
         negative_news_max_sentiment = float(
             context.params.get("negative_news_max_sentiment", -0.2)
         )
+        negative_news_event_types = _parse_csv_tokens(
+            context.params.get("negative_news_event_types", "severe_company_risk")
+        )
 
         for name, value in [
             ("max_position_weight", max_position_weight),
@@ -1206,6 +1215,7 @@ class MLScoreRankStrategy(Strategy):
                     lookback_days=negative_news_lookback_days,
                     min_relevance=negative_news_min_relevance,
                     max_sentiment=negative_news_max_sentiment,
+                    event_types=negative_news_event_types,
                 )
             )
         if _truthy(context.params.get("use_db_negative_news", False)):
@@ -1216,6 +1226,7 @@ class MLScoreRankStrategy(Strategy):
                     lookback_days=negative_news_lookback_days,
                     min_relevance=negative_news_min_relevance,
                     max_sentiment=negative_news_max_sentiment,
+                    event_types=negative_news_event_types,
                 )
             )
 
@@ -1314,6 +1325,14 @@ def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _parse_csv_tokens(value: object) -> set[str]:
+    return {
+        item.strip().lower()
+        for item in str(value or "").split(",")
+        if item.strip()
+    }
+
+
 @lru_cache(maxsize=8)
 def _load_trade_gaps(path: str) -> pd.DataFrame:
     frame = pd.read_csv(path, dtype={"symbol": "string"})
@@ -1354,6 +1373,9 @@ def _load_negative_news(path: str) -> pd.DataFrame:
     out["known_at"] = out[["published_at", "fetched_at"]].max(axis=1)
     out["sentiment_label"] = out["sentiment_label"].astype(str).str.strip().str.lower()
     out["sentiment_score"] = pd.to_numeric(out["sentiment_score"], errors="coerce")
+    if "event_type" not in out.columns:
+        out["event_type"] = ""
+    out["event_type"] = out["event_type"].astype(str).str.strip().str.lower()
     if "relevance_score" not in out.columns:
         out["relevance_score"] = 1.0
     out["relevance_score"] = pd.to_numeric(out["relevance_score"], errors="coerce").fillna(0.0)
@@ -1367,18 +1389,24 @@ def _blocked_by_negative_news(
     lookback_days: int,
     min_relevance: float,
     max_sentiment: float,
+    event_types: set[str],
 ) -> set[str]:
     news = _load_negative_news(path)
     end = pd.Timestamp(current_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
     start = pd.Timestamp(current_date) - pd.Timedelta(days=lookback_days)
+    risk = (
+        news["event_type"].isin(event_types)
+        if event_types
+        else (
+            (news["sentiment_label"].isin({"negative", "risk", "bearish", "bad"}))
+            | (news["sentiment_score"] <= max_sentiment)
+        )
+    )
     filtered = news[
         (news["known_at"] >= start)
         & (news["known_at"] <= end)
         & (news["relevance_score"] >= min_relevance)
-        & (
-            (news["sentiment_label"].isin({"negative", "risk", "bearish", "bad"}))
-            | (news["sentiment_score"] <= max_sentiment)
-        )
+        & risk
     ]
     return set(filtered["symbol"].astype(str))
 
@@ -1390,6 +1418,7 @@ def _blocked_by_negative_news_frame(
     lookback_days: int,
     min_relevance: float,
     max_sentiment: float,
+    event_types: set[str],
 ) -> set[str]:
     if frame is None or frame.empty:
         return set()
@@ -1418,15 +1447,20 @@ def _blocked_by_negative_news_frame(
     news = news.dropna(subset=["symbol", "known_at"])
     end = pd.Timestamp(current_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
     start = pd.Timestamp(current_date) - pd.Timedelta(days=lookback_days)
-    filtered = news[
-        (news["known_at"] >= start)
-        & (news["known_at"] <= end)
-        & (news["relevance_score"] >= min_relevance)
-        & (
+    risk = (
+        news["event_type"].isin(event_types)
+        if event_types
+        else (
             (news["event_type"].isin({"negative_news", "risk_news"}))
             | (news["sentiment_label"].isin({"negative", "risk", "bearish", "bad"}))
             | (news["sentiment_score"] <= max_sentiment)
         )
+    )
+    filtered = news[
+        (news["known_at"] >= start)
+        & (news["known_at"] <= end)
+        & (news["relevance_score"] >= min_relevance)
+        & risk
     ]
     return set(filtered["symbol"].astype(str))
 
