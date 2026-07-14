@@ -316,6 +316,7 @@ class AkSharePitProvider:
             ].drop_duplicates("symbol")
         combined = pd.concat(frames, ignore_index=True)
         combined = combined.drop_duplicates(subset=["symbol"], keep="first")
+        combined["list_date"] = combined["list_date"].map(_to_date)
         return combined.reset_index(drop=True)
 
     # --- Index constituents / weights ------------------------------------

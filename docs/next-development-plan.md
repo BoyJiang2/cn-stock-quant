@@ -447,9 +447,9 @@ Goal: reduce false confidence from survivorship and future-data assumptions.
 
 | ID | Task | Owner | Status | Output | Acceptance Criteria | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| P3-1 | Historical listing/delisting table | DeepSeek + Codex | todo | DB model/table and sync | Backtest can know listed status by date | High priority before paper |
-| P3-2 | Historical ST/risk table | DeepSeek + Codex | todo | DB model/table and sync | Strategy can exclude ST as-of date | Avoid using current name only |
-| P3-3 | Historical index constituents | GLM + Codex | todo | Constituents for `000300/000905/000852` | Can build historical CSI universes | Needed for fair benchmarks/pools |
+| P3-1 | Historical listing/delisting table | GLM + Codex | done | PIT status intervals and AkShare sync | Backtest can know listed/delisted status by date | 2026-07-14: normalized provider listing dates; synced 5,280 listed and 726 delist intervals |
+| P3-2 | Historical ST/risk table | GLM + DeepSeek + Codex | doing | Separate ST axis and SZ name-change sync | Strategy can exclude known ST as-of date | Use dated `stock_info_sz_change_name`; current ST is forward-only |
+| P3-3 | Historical index constituents | GLM + Codex | doing | `399006` historical intervals | Can build a historical ChiNext universe | AkShare has `399006` adjustment history; `000300/000905/000852` still require CSI archive/Tushare |
 | P3-4 | PIT universe selector | Codex | todo | `get_tradeable_universe(as_of_date)` | Backtest can request tradable universe for each date | Integrate after P3-1/P3-2 |
 | P3-5 | Gap classification | Codex | todo | Data quality report upgrade | Missing bars classified where possible | Suspension vs listing vs provider gap |
 | P3-6 | Make degraded warnings stricter | Codex | todo | Backtest/report warnings | Non-PIT runs visibly marked | Already partially present |
@@ -511,6 +511,7 @@ Goal: keep long-running work maintainable.
 | P7-3 | Add watcher usage docs | Codex | todo | README/docs snippet | User can run watcher directly | After current manual sync finishes |
 | P7-4 | Keep task board updated | All agents | doing | This document | Every round updates status/notes | Required for handoff |
 | P7-5 | CI/test warning cleanup | Codex | todo | Reduced warnings | Pydantic/FastAPI deprecation warnings addressed | Not urgent for alpha |
+| P7-6 | Bound backtest dates to local data | Codex | done | Backtest date defaults and picker bounds | UI defaults to the database availability envelope | Prevents accidental future-date runs; symbol-level coverage remains a separate diagnostic |
 
 ## Suggested Multi-Agent Split
 

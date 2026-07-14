@@ -271,6 +271,18 @@ class PitRepository:
             valid_to = _coerce_optional_date(row.get("valid_to"))
             _validate_interval(valid_from, valid_to)
             announced_at = _coerce_optional_date(row.get("announced_at"))
+            if status == "listed" and confidence == "high" and announced_at == valid_from:
+                # Replace an older current-snapshot placeholder when a later
+                # sync obtains the actual listing date from the provider.
+                self.session.execute(
+                    SecurityStatus.__table__.delete().where(
+                        SecurityStatus.symbol == symbol,
+                        SecurityStatus.status == "listed",
+                        SecurityStatus.valid_from > valid_from,
+                        SecurityStatus.announced_at.is_(None),
+                        SecurityStatus.confidence == "medium",
+                    )
+                )
             # Delete the conflicting unique-key row, then insert.
             self.session.execute(
                 SecurityStatus.__table__.delete().where(

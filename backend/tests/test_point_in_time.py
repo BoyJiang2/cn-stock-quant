@@ -992,6 +992,21 @@ def test_stock_list_falls_back_to_generic_a_share_list(monkeypatch):
     assert result["exchange"].tolist() == ["SZ", "SH"]
 
 
+def test_stock_list_normalizes_listing_dates_from_provider_strings(monkeypatch):
+    sh_rows = pd.DataFrame(
+        [{"证券代码": "600000", "证券简称": "Example", "上市日期": "1999-11-10"}]
+    )
+    fake_akshare = SimpleNamespace(
+        stock_info_sh_name_code=lambda symbol: sh_rows if symbol == "主板A股" else pd.DataFrame(),
+        stock_info_sz_name_code=lambda symbol: pd.DataFrame(),
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+    result = AkSharePitProvider().stock_list_with_list_date()
+
+    assert result.iloc[0]["list_date"] == date(1999, 11, 10)
+
+
 def test_st_prefix_does_not_match_unrelated_english_name():
     assert _st_prefix("STAR Technology") is False
     assert _st_prefix("ST中珠") is True
@@ -1018,6 +1033,41 @@ def test_current_status_sync_skips_future_listing(pit):
 
     assert summary.records == 0
     assert pit.status_as_of("001999", date(2024, 1, 15)) is None
+
+
+def test_real_listing_date_replaces_later_snapshot_placeholder(pit):
+    pit.upsert_security_status(
+        [
+            {
+                "symbol": "000001",
+                "status": "listed",
+                "valid_from": date(2026, 6, 20),
+                "valid_to": None,
+                "announced_at": None,
+                "source": "snapshot",
+                "confidence": "medium",
+            }
+        ]
+    )
+    pit.upsert_security_status(
+        [
+            {
+                "symbol": "000001",
+                "status": "listed",
+                "valid_from": date(1991, 4, 3),
+                "valid_to": None,
+                "announced_at": date(1991, 4, 3),
+                "source": "provider",
+                "confidence": "high",
+            }
+        ]
+    )
+
+    status = pit.status_as_of("000001", date(2026, 7, 1))
+
+    assert status is not None
+    assert status.valid_from == date(1991, 4, 3)
+    assert status.confidence == "high"
 
 
 def test_current_name_snapshot_is_not_backdated_to_listing_date(pit):

@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { EquityChart } from "../components/EquityChart";
 import { MetricCard } from "../components/MetricCard";
-import type { BacktestResponse, BacktestRun, BacktestRunRequest, StrategyItem, StrategyParameter, SymbolSource } from "../types";
+import type { BacktestResponse, BacktestRun, BacktestRunRequest, DataDiagnostics, StrategyItem, StrategyParameter, SymbolSource } from "../types";
 
 const { RangePicker } = DatePicker;
 
@@ -45,6 +45,7 @@ export function BacktestPage() {
   const [runs, setRuns] = useState<BacktestRun[]>([]);
   const [strategies, setStrategies] = useState<StrategyItem[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyItem | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DataDiagnostics | null>(null);
   const [loading, setLoading] = useState(false);
 
   const symbolSource = Form.useWatch<SymbolSource>("symbol_source", form) ?? "manual";
@@ -77,6 +78,22 @@ export function BacktestPage() {
     setRuns(response.data);
   };
 
+  const loadDiagnostics = async () => {
+    const response = await api.get<DataDiagnostics>("/api/data/diagnostics");
+    const diagnostics = response.data;
+    setDiagnostics(diagnostics);
+    if (!diagnostics.start_date || !diagnostics.end_date) {
+      return;
+    }
+    const earliest = dayjs(diagnostics.start_date);
+    const latest = dayjs(diagnostics.end_date);
+    const twoYearsBeforeLatest = latest.subtract(2, "year");
+    form.setFieldValue("range", [
+      twoYearsBeforeLatest.isBefore(earliest, "day") ? earliest : twoYearsBeforeLatest,
+      latest
+    ]);
+  };
+
   const loadRunDetail = async (id: number) => {
     const response = await api.get<BacktestResponse>(`/api/backtests/${id}`);
     setResult(response.data);
@@ -85,7 +102,17 @@ export function BacktestPage() {
   useEffect(() => {
     loadStrategies().catch(() => undefined);
     loadRuns().catch(() => undefined);
+    loadDiagnostics().catch(() => {
+      message.error("数据可用区间加载失败");
+    });
   }, []);
+
+  const disableUnavailableDate = (current: dayjs.Dayjs) => {
+    if (!diagnostics?.start_date || !diagnostics.end_date) {
+      return false;
+    }
+    return current.isBefore(dayjs(diagnostics.start_date), "day") || current.isAfter(dayjs(diagnostics.end_date), "day");
+  };
 
   const runBacktest = async (values: BacktestFormValues) => {
     setLoading(true);
@@ -237,7 +264,7 @@ export function BacktestPage() {
           <Select options={BENCHMARK_OPTIONS} style={{ width: 180 }} />
         </Form.Item>
         <Form.Item label="区间" name="range" rules={[{ required: true, message: "请选择日期区间" }]}>
-          <RangePicker />
+          <RangePicker disabledDate={disableUnavailableDate} />
         </Form.Item>
         <Form.Item label="初始资金" name="initial_cash" rules={[{ required: true, message: "请输入初始资金" }]}>
           <InputNumber min={10000} step={10000} />
@@ -265,7 +292,13 @@ export function BacktestPage() {
             {renderParameterInput(parameter)}
           </Form.Item>
         ))}
-        <Button htmlType="submit" icon={<Play size={16} />} loading={loading} type="primary">
+        <Button
+          disabled={!diagnostics?.start_date || !diagnostics?.end_date}
+          htmlType="submit"
+          icon={<Play size={16} />}
+          loading={loading}
+          type="primary"
+        >
           运行回测
         </Button>
       </Form>
