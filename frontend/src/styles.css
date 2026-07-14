@@ -458,3 +458,272 @@ h1 {
     grid-template-columns: 1fr;
   }
 }
+
+/* Operational visual system: dense, calm, and optimized for repeated research work. */
+:root {
+  --quant-ink: #172033;
+  --quant-muted: #718097;
+  --quant-line: #dce4ee;
+  --quant-line-soft: #e9eef4;
+  --quant-canvas: #f2f5f9;
+  --quant-surface: #ffffff;
+  --quant-nav: #111827;
+  --quant-nav-active: #1e293b;
+  --quant-blue: #2563eb;
+  --quant-teal: #16856f;
+  --quant-red: #c63e3e;
+}
+
+body {
+  background: var(--quant-canvas);
+  color: var(--quant-ink);
+  font-size: 14px;
+}
+
+.sidebar {
+  display: flex;
+  width: 256px;
+  flex: 0 0 256px;
+  flex-direction: column;
+  background: var(--quant-nav);
+  padding: 24px 14px 18px;
+  border-right-color: #202b3b;
+}
+
+.brand {
+  margin-bottom: 30px;
+  padding: 0 10px;
+}
+
+.brandMark {
+  border-radius: 7px;
+  background: #1e8e89;
+  box-shadow: 0 6px 18px rgba(12, 132, 124, 0.25);
+}
+
+.brandSub {
+  color: #91a0b5;
+}
+
+.nav {
+  gap: 4px;
+}
+
+.navItem {
+  min-height: 44px;
+  border-radius: 6px;
+  color: #aebbd0;
+  padding: 0 13px;
+}
+
+.navItem.active,
+.navItem:hover {
+  background: var(--quant-nav-active);
+}
+
+.navItem.active {
+  box-shadow: inset 3px 0 0 #2d9c9a;
+}
+
+.main {
+  padding: 30px;
+  background: var(--quant-canvas);
+}
+
+.page {
+  gap: 20px;
+}
+
+h1 {
+  color: var(--quant-ink);
+  font-size: 26px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.toolbar,
+.formPanel,
+.panel,
+.chartPanel,
+.klineChart,
+.homePanel,
+.homeKpi,
+.metricCard,
+.homeCommand {
+  border-color: var(--quant-line);
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(18, 35, 58, 0.03);
+}
+
+.toolbar,
+.formPanel {
+  padding: 15px;
+}
+
+.panel,
+.homePanel {
+  padding: 18px;
+}
+
+.panelTitle,
+.homePanelTitle {
+  color: var(--quant-ink);
+  font-weight: 750;
+}
+
+.metricGrid,
+.homeKpiGrid {
+  gap: 14px;
+}
+
+.metricCard,
+.homeKpi {
+  position: relative;
+  overflow: hidden;
+  padding: 16px 18px;
+}
+
+.metricCard::before,
+.homeKpi::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: #2d9c9a;
+  content: "";
+}
+
+.metricCard span,
+.homeKpi span,
+.homeKpi small,
+.homePanelSub,
+.runSummary span,
+.artifactItem small,
+.ruleGrid span {
+  color: var(--quant-muted);
+}
+
+.metricCard strong,
+.homeKpi strong {
+  color: var(--quant-ink);
+  font-size: 25px;
+}
+
+.metricCard.good strong,
+.goodText {
+  color: var(--quant-teal);
+}
+
+.metricCard.bad strong,
+.badText {
+  color: var(--quant-red);
+}
+
+.homeHeader {
+  padding: 2px 0 6px;
+}
+
+.homeEyebrow {
+  color: #257b77;
+  font-weight: 800;
+}
+
+.homeHeader h1 {
+  font-size: 30px;
+}
+
+.homeSubline {
+  color: var(--quant-muted);
+}
+
+.homeCommand {
+  border-color: var(--quant-line);
+  color: #344359;
+  transition: border-color 160ms ease, box-shadow 160ms ease, color 160ms ease;
+}
+
+.homeCommand:hover {
+  border-color: #65a6a3;
+  color: #116f6b;
+  box-shadow: 0 4px 12px rgba(18, 35, 58, 0.06);
+}
+
+.runSummary div {
+  border-color: var(--quant-line-soft);
+  border-radius: 5px;
+}
+
+.artifactItem {
+  border-bottom-color: var(--quant-line-soft);
+}
+
+.ant-btn {
+  border-radius: 5px;
+  box-shadow: none;
+  font-weight: 600;
+}
+
+.ant-btn-primary {
+  background: var(--quant-blue);
+  box-shadow: 0 3px 8px rgba(37, 99, 235, 0.18);
+}
+
+.ant-btn-primary:hover {
+  background: #1d4ed8 !important;
+}
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-number,
+.ant-picker,
+.ant-select-selector {
+  border-color: #d2dce8 !important;
+  box-shadow: none !important;
+}
+
+.ant-input:hover,
+.ant-input-affix-wrapper:hover,
+.ant-input-number:hover,
+.ant-picker:hover,
+.ant-select:hover .ant-select-selector {
+  border-color: #89a6dc !important;
+}
+
+.ant-form-item-label > label {
+  color: #526178;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.ant-table-wrapper .ant-table {
+  overflow: hidden;
+  border: 1px solid var(--quant-line);
+  border-radius: 6px;
+}
+
+.ant-table-wrapper .ant-table-thead > tr > th {
+  background: #f7f9fc;
+  color: #4e5e74;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  border-bottom-color: var(--quant-line-soft);
+}
+
+.ant-table-wrapper .ant-table-tbody > tr:hover > td {
+  background: #f6faff !important;
+}
+
+@media (max-width: 760px) {
+  .sidebar {
+    width: 100%;
+    padding: 14px;
+  }
+
+  .main {
+    padding: 18px;
+  }
+}
