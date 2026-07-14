@@ -1,16 +1,18 @@
-import { CandlestickChart, Database, FlaskConical, LayoutDashboard, LineChart, ShieldCheck, WalletCards } from "lucide-react";
+import { CandlestickChart, Database, FlaskConical, LayoutDashboard, LineChart, ShieldCheck, Sparkles, WalletCards } from "lucide-react";
 import { useState } from "react";
 
 import { BacktestPage } from "./pages/BacktestPage";
+import { AdvisoryPage } from "./pages/AdvisoryPage";
 import { DataPage } from "./pages/DataPage";
 import { HomePage } from "./pages/HomePage";
 import { KlinePage } from "./pages/KlinePage";
 import { PortfolioPage } from "./pages/PortfolioPage";
 import { StrategyPage } from "./pages/StrategyPage";
 
-type PageKey = "home" | "data" | "kline" | "strategies" | "backtests" | "portfolio" | "risk";
+type PageKey = "home" | "data" | "kline" | "strategies" | "advisory" | "backtests" | "portfolio" | "risk";
 
 const navItems = [
+  { key: "advisory", label: "AI Advisor", icon: Sparkles },
   { key: "home", label: "总览", icon: LayoutDashboard },
   { key: "data", label: "数据中心", icon: Database },
   { key: "kline", label: "K 线查看", icon: CandlestickChart },
@@ -55,6 +57,7 @@ function App() {
         {active === "data" && <DataPage />}
         {active === "kline" && <KlinePage />}
         {active === "strategies" && <StrategyPage />}
+        {active === "advisory" && <AdvisoryPage />}
         {active === "backtests" && <BacktestPage />}
         {active === "portfolio" && <PortfolioPage />}
         {active === "risk" && (

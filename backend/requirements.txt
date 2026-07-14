@@ -7,3 +7,4 @@ SQLAlchemy>=2.0.0
 uvicorn[standard]>=0.30.0
 pytest>=8.3.0
 lightgbm>=4.3.0
+openai>=1.0.0

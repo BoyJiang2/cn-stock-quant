@@ -1,0 +1,63 @@
+from datetime import date
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class AdvisoryPositionIn(BaseModel):
+    symbol: str = Field(min_length=1, max_length=32)
+    quantity: int = Field(ge=0)
+
+
+class AdvisoryRequest(BaseModel):
+    strategy_name: str = Field(default="moving_average", min_length=1, max_length=128)
+    as_of_date: date
+    symbols: list[str] = Field(min_length=1, max_length=6000)
+    cash: float = Field(ge=0)
+    positions: list[AdvisoryPositionIn] = Field(default_factory=list)
+    strategy_parameters: dict[str, Any] = Field(default_factory=dict)
+    lookback_calendar_days: int = Field(default=365, ge=30, le=2000)
+    max_symbol_weight: float = Field(default=0.1, ge=0.0, le=1.0)
+    max_total_weight: float = Field(default=0.8, ge=0.0, le=1.0)
+    max_positions: int | None = Field(default=20, ge=1, le=500)
+    allow_remote_llm: bool = False
+
+
+class AdvisoryTradeOut(BaseModel):
+    symbol: str
+    side: Literal["buy", "sell"]
+    current_quantity: int
+    target_quantity: int
+    quantity: int
+    reference_price: float
+    estimated_amount: float
+
+
+class AdvisoryResponse(BaseModel):
+    id: int
+    status: Literal["draft", "llm_disabled", "failed"]
+    as_of_date: date
+    earliest_execution_date: date | None = None
+    price_basis: Literal["research_close_only"]
+    strategy_name: str
+    total_equity: float
+    raw_target_weights: dict[str, float]
+    accepted_target_weights: dict[str, float]
+    rejected_target_weights: dict[str, str]
+    trade_plan: list[AdvisoryTradeOut]
+    warnings: list[str] = Field(default_factory=list)
+    remote_llm_enabled: bool = False
+    llm_summary: str | None = None
+
+
+class AdvisoryReviewResponse(BaseModel):
+    id: int
+    status: Literal["reviewed"]
+    reviewed_at: str
+
+
+class AdvisoryNotificationResponse(BaseModel):
+    delivery_id: int
+    status: Literal["sent"]
+    channel: str
+    provider_message: str

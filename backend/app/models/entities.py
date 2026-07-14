@@ -138,3 +138,47 @@ class SyncJob(Base):
     records: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AdvisoryRun(Base):
+    __tablename__ = "advisory_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_name: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="draft")
+    total_equity: Mapped[float] = mapped_column(Float)
+    request_hash: Mapped[str] = mapped_column(String(64), index=True)
+    request_json: Mapped[str] = mapped_column(Text, default="{}")
+    risk_json: Mapped[str] = mapped_column(Text, default="{}")
+    trade_plan_json: Mapped[str] = mapped_column(Text, default="[]")
+    llm_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    remote_llm_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    llm_summary: Mapped[str] = mapped_column(Text, default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AdvisoryNotificationDelivery(Base):
+    __tablename__ = "advisory_notification_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "advisory_run_id",
+            "channel",
+            "idempotency_key",
+            name="uq_advisory_delivery_idempotency",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    advisory_run_id: Mapped[int] = mapped_column(Integer, index=True)
+    channel: Mapped[str] = mapped_column(String(64), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), index=True, default="pending")
+    content_hash: Mapped[str] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provider_message: Mapped[str] = mapped_column(String(500), default="")
+    error_message: Mapped[str] = mapped_column(String(500), default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

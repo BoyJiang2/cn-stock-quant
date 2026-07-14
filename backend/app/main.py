@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
+    advisory,
     ai_research,
     backtest,
     data,
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(backtest.router, prefix="/api/backtests", tags=["backtests"])
     app.include_router(factors.router, prefix="/api/factors", tags=["factors"])
     app.include_router(ai_research.router, prefix="/api/ai-research", tags=["ai-research"])
+    app.include_router(advisory.router, prefix="/api/advisory", tags=["advisory"])
     app.include_router(pit.router, prefix="/api/data/pit", tags=["pit"])
 
     @app.on_event("startup")
