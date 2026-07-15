@@ -68,6 +68,29 @@ class NewsEvidenceOut(BaseModel):
     items: list[NewsEvidenceItemOut] = Field(default_factory=list)
 
 
+class FactorValueOut(BaseModel):
+    name: str
+    direction: int
+    raw_value: float | None = None
+
+
+class FactorSymbolEvidenceOut(BaseModel):
+    symbol: str
+    available: bool
+    values: list[FactorValueOut] = Field(default_factory=list)
+    warning: str | None = None
+
+
+class FactorEvidenceOut(BaseModel):
+    availability_mode: Literal["observed_trailing"] = "observed_trailing"
+    as_of_date: date
+    data_start_date: date | None = None
+    data_end_date: date | None = None
+    factor_names: list[str] = Field(default_factory=list)
+    symbols: list[FactorSymbolEvidenceOut] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AdvisoryResponse(BaseModel):
     id: int
     status: Literal["draft", "llm_disabled", "failed"]
@@ -82,6 +105,7 @@ class AdvisoryResponse(BaseModel):
     trade_plan: list[AdvisoryTradeOut]
     market_evidence: MarketEvidenceOut
     news_evidence: NewsEvidenceOut
+    factor_evidence: FactorEvidenceOut
     warnings: list[str] = Field(default_factory=list)
     remote_llm_enabled: bool = False
     llm_summary: str | None = None

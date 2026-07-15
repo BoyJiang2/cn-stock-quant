@@ -94,6 +94,29 @@ interface NewsEvidence {
   items: NewsEvidenceItem[];
 }
 
+interface FactorValue {
+  name: string;
+  direction: number;
+  raw_value: number | null;
+}
+
+interface FactorSymbolEvidence {
+  symbol: string;
+  available: boolean;
+  values: FactorValue[];
+  warning: string | null;
+}
+
+interface FactorEvidence {
+  availability_mode: "observed_trailing";
+  as_of_date: string;
+  data_start_date: string | null;
+  data_end_date: string | null;
+  factor_names: string[];
+  symbols: FactorSymbolEvidence[];
+  warnings: string[];
+}
+
 interface AdvisoryDraft {
   id: number;
   status: "draft" | "llm_disabled" | "failed";
@@ -108,6 +131,7 @@ interface AdvisoryDraft {
   trade_plan: AdvisoryTrade[];
   market_evidence: MarketEvidence;
   news_evidence: NewsEvidence;
+  factor_evidence: FactorEvidence;
   warnings: string[];
   remote_llm_enabled: boolean;
   llm_summary: string | null;
@@ -122,6 +146,13 @@ interface AdvisoryCapabilities {
 
 const formatAmount = (value: number) =>
   new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
+
+const formatFactorValue = (value: number | null) => {
+  if (value === null) {
+    return "-";
+  }
+  return Math.abs(value) < 0.001 && value !== 0 ? value.toExponential(2) : value.toFixed(4);
+};
 
 const parseSymbols = (value: string) =>
   [...new Set(value.split(/[，,\s]+/).map((symbol) => symbol.trim()).filter(Boolean))];
@@ -425,6 +456,34 @@ export function AdvisoryPage() {
                 {draft.market_evidence.reasons.join(" | ")}
               </Text>
             )}
+            <Divider orientation="left" plain>因子快照</Divider>
+            <Text type="secondary">
+              截至 {draft.factor_evidence.data_end_date || draft.factor_evidence.as_of_date} 的价格和成交量滚动变换；不包含未来收益、IC 或历史有效性结论。
+            </Text>
+            {draft.factor_evidence.warnings.map((warning) => (
+              <Alert key={warning} message={warning} showIcon type="info" style={{ marginTop: 10 }} />
+            ))}
+            <Table
+              columns={[
+                { title: "代码", dataIndex: "symbol", width: 100 },
+                {
+                  title: "因子原始值",
+                  render: (_, row: FactorSymbolEvidence) => row.values.map((value) => (
+                    <Tag key={value.name} color={value.direction > 0 ? "blue" : "default"} style={{ marginBottom: 4 }}>
+                      {`${value.name}: ${formatFactorValue(value.raw_value)}`}
+                    </Tag>
+                  ))
+                },
+                { title: "状态", dataIndex: "warning", width: 220, render: (value: string | null) => value || "可用" }
+              ]}
+              dataSource={draft.factor_evidence.symbols}
+              locale={{ emptyText: "没有可用于该决策日的因子快照" }}
+              pagination={false}
+              rowKey="symbol"
+              size="small"
+              style={{ marginTop: 12 }}
+            />
+            <Divider orientation="left" plain>新闻证据</Divider>
             <Table
               columns={[
                 { title: "代码", dataIndex: "symbol", width: 100, render: (value: string | null) => value || "市场" },

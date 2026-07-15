@@ -1,5 +1,6 @@
-from datetime import date, datetime, timedelta
 from dataclasses import replace
+from datetime import date, datetime, timedelta
+import json
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -234,6 +235,61 @@ def test_advisory_snapshot_uses_only_market_and_news_known_by_as_of_date():
     assert [item["title"] for item in body["news_evidence"]["items"]] == [
         "severe_company_risk test news"
     ]
+    assert body["factor_evidence"]["availability_mode"] == "observed_trailing"
+    assert body["factor_evidence"]["data_end_date"] == as_of_date.isoformat()
+    assert body["factor_evidence"]["symbols"][0]["available"] is True
+    assert all(
+        "return" not in value["name"]
+        for value in body["factor_evidence"]["symbols"][0]["values"]
+    )
+    session = session_factory()
+    try:
+        record = session.get(AdvisoryRun, body["id"])
+        assert record is not None
+        assert json.loads(record.risk_json)["evidence"]["factors"] == body["factor_evidence"]
+    finally:
+        session.close()
+
+
+def test_advisory_factor_snapshot_excludes_future_bars():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    payload = {
+        "strategy_name": "moving_average",
+        "as_of_date": as_of_date.isoformat(),
+        "symbols": ["000001"],
+        "cash": 100_000,
+        "strategy_parameters": {"fast_window": 5, "slow_window": 20},
+    }
+    before = client.post("/api/advisory/drafts", json=payload)
+    assert before.status_code == 200
+
+    session = session_factory()
+    try:
+        for offset in range(1, 11):
+            future_date = as_of_date + timedelta(days=offset)
+            session.add(
+                DailyBar(
+                    symbol="000001",
+                    trade_date=future_date,
+                    open=1_000.0,
+                    high=1_000.0,
+                    low=1_000.0,
+                    close=1_000.0,
+                    volume=1.0,
+                    amount=1_000.0,
+                    adj="qfq",
+                )
+            )
+        session.commit()
+    finally:
+        session.close()
+
+    after = client.post("/api/advisory/drafts", json=payload)
+    assert after.status_code == 200
+    assert after.json()["factor_evidence"] == before.json()["factor_evidence"]
 
 
 def test_advisory_requires_an_as_of_close_for_every_selected_symbol():
@@ -283,6 +339,7 @@ def test_advisory_stream_persists_text_from_the_provider():
             assert '"strategy_name": "moving_average"' in user_prompt
             assert '"market_evidence"' in user_prompt
             assert '"news_evidence"' in user_prompt
+            assert '"factor_evidence"' in user_prompt
             yield "First part. "
             yield "Second part."
 

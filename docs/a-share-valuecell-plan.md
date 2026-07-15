@@ -73,8 +73,11 @@ that is constrained to the already risk-gated trade-plan draft.
 - [x] P1-3a Add market-regime and observed-news evidence with source/known
   timestamps to the advisory snapshot and LLM context. News is restricted to
   items known no later than the advisory date to prevent future leakage.
-- [ ] P1-3b Add point-in-time factor and out-of-sample backtest evidence to
-  the advisory context with source timestamps.
+- [x] P1-3b-1 Add an as-of-date trailing factor snapshot for target/held
+  symbols. It persists only observed price/volume transforms and explicitly
+  excludes forward returns, IC, and historical-effectiveness claims.
+- [ ] P1-3b-2 Persist validated walk-forward out-of-sample backtest metadata
+  and attach only an explicitly selected, eligible result to advisory context.
 - [x] P1-4 Add an LLM prompt/result contract that constrains it to a
   risk-gated trade-plan explanation and non-binding risk rationale.
 - [x] P1-5 Add streamed report events to the web API.
