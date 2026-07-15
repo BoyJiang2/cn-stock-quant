@@ -1,4 +1,4 @@
-import { Button, DatePicker, Form, Input, InputNumber, Select, Switch, Table, message } from "antd";
+import { Alert, Button, DatePicker, Form, Input, InputNumber, Select, Switch, Table, Tag, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { Play } from "lucide-react";
@@ -39,6 +39,37 @@ interface BacktestFormValues {
   parameters: Record<string, number | string | boolean | null>;
 }
 
+interface WalkForwardWindowResult {
+  name: string;
+  start_date: string;
+  end_date: string;
+  trade_count: number;
+  metrics: {
+    total_return: number;
+    max_drawdown: number;
+    sharpe: number;
+    excess_return: number;
+  };
+}
+
+interface WalkForwardValidation {
+  id: number;
+  backtest_run_id: number;
+  eligibility_status: string;
+  result: {
+    window_results: WalkForwardWindowResult[];
+    aggregate: Record<string, number>;
+    cost_stress_aggregate: Record<string, number>;
+    cost_stress_multiplier: number;
+  };
+  quality: {
+    quality_flags: string[];
+    window_count: number;
+    oos_trading_days: number;
+    benchmark_complete: boolean;
+  };
+}
+
 export function BacktestPage() {
   const [form] = Form.useForm<BacktestFormValues>();
   const [result, setResult] = useState<BacktestResponse | null>(null);
@@ -47,6 +78,8 @@ export function BacktestPage() {
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyItem | null>(null);
   const [diagnostics, setDiagnostics] = useState<DataDiagnostics | null>(null);
   const [loading, setLoading] = useState(false);
+  const [validation, setValidation] = useState<WalkForwardValidation | null>(null);
+  const [validatingRunId, setValidatingRunId] = useState<number | null>(null);
 
   const symbolSource = Form.useWatch<SymbolSource>("symbol_source", form) ?? "manual";
 
@@ -97,6 +130,19 @@ export function BacktestPage() {
   const loadRunDetail = async (id: number) => {
     const response = await api.get<BacktestResponse>(`/api/backtests/${id}`);
     setResult(response.data);
+  };
+
+  const runWalkForwardValidation = async (id: number) => {
+    setValidatingRunId(id);
+    try {
+      const response = await api.post<WalkForwardValidation>(`/api/backtests/${id}/walk-forward-validations`, {});
+      setValidation(response.data);
+      message.success("滚动验证完成");
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || "滚动验证失败");
+    } finally {
+      setValidatingRunId(null);
+    }
   };
 
   useEffect(() => {
@@ -204,6 +250,18 @@ export function BacktestPage() {
       render: (_, row) => (
         <Button onClick={() => loadRunDetail(row.id)} size="small">
           查看
+        </Button>
+      )
+    }
+  ];
+
+  const historyColumns: ColumnsType<BacktestRun> = [
+    ...runColumns,
+    {
+      title: "滚动验证",
+      render: (_, row) => (
+        <Button loading={validatingRunId === row.id} onClick={() => runWalkForwardValidation(row.id)} size="small">
+          验证
         </Button>
       )
     }
@@ -324,9 +382,42 @@ export function BacktestPage() {
           />
         </>
       )}
+      {validation && (
+        <div className="panel">
+          <div className="panelTitle">
+            滚动样本外验证 <Tag color={validation.eligibility_status === "eligible" ? "green" : "orange"}>{validation.eligibility_status === "eligible" ? "可作为研究证据" : "不可作为研究证据"}</Tag>
+          </div>
+          {validation.quality.quality_flags.map((flag) => (
+            <Alert key={flag} message={flag} showIcon style={{ marginBottom: 10 }} type="warning" />
+          ))}
+          <div className="metricGrid">
+            <MetricCard label="OOS 窗口" value={String(validation.quality.window_count)} />
+            <MetricCard label="OOS 交易日" value={String(validation.quality.oos_trading_days)} />
+            <MetricCard label="平均超额收益" tone={(validation.result.aggregate.excess_return || 0) >= 0 ? "good" : "bad"} value={`${((validation.result.aggregate.excess_return || 0) * 100).toFixed(2)}%`} />
+            <MetricCard label="平均最大回撤" tone="bad" value={`${((validation.result.aggregate.max_drawdown || 0) * 100).toFixed(2)}%`} />
+            <MetricCard label={`${validation.result.cost_stress_multiplier}x 成本超额`} tone={(validation.result.cost_stress_aggregate.excess_return || 0) >= 0 ? "good" : "bad"} value={`${((validation.result.cost_stress_aggregate.excess_return || 0) * 100).toFixed(2)}%`} />
+          </div>
+          <Table
+            columns={[
+              { title: "窗口", dataIndex: "name", width: 100 },
+              { title: "开始", dataIndex: "start_date" },
+              { title: "结束", dataIndex: "end_date" },
+              { title: "收益", render: (_, row: WalkForwardWindowResult) => `${(row.metrics.total_return * 100).toFixed(2)}%` },
+              { title: "超额", render: (_, row: WalkForwardWindowResult) => `${(row.metrics.excess_return * 100).toFixed(2)}%` },
+              { title: "最大回撤", render: (_, row: WalkForwardWindowResult) => `${(row.metrics.max_drawdown * 100).toFixed(2)}%` },
+              { title: "夏普", render: (_, row: WalkForwardWindowResult) => row.metrics.sharpe.toFixed(2) },
+              { title: "成交", dataIndex: "trade_count" }
+            ]}
+            dataSource={validation.result.window_results}
+            pagination={false}
+            rowKey="name"
+            size="small"
+          />
+        </div>
+      )}
       <div className="panel">
         <div className="panelTitle">回测历史</div>
-        <Table columns={runColumns} dataSource={runs} pagination={{ pageSize: 6 }} rowKey="id" />
+        <Table columns={historyColumns} dataSource={runs} pagination={{ pageSize: 6 }} rowKey="id" />
       </div>
     </section>
   );

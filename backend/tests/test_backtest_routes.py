@@ -8,6 +8,7 @@ in-memory SQLite database injected via FastAPI's ``dependency_overrides``.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import json
 
 import pandas as pd
 from fastapi.testclient import TestClient
@@ -17,7 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import BacktestRun, Base, DailyBar, IndexDailyBar, NewsItem, Stock
+from app.models.entities import BacktestRun, BacktestRunProvenance, Base, DailyBar, IndexDailyBar, NewsItem, Stock
 from app.models.pit import SecurityStatus
 from app.schemas.backtest import BacktestRequest
 
@@ -220,6 +221,92 @@ def test_legacy_backtest_provenance_is_explicitly_not_recorded():
     response = _client_with(session_factory).get(f"/api/backtests/{run_id}/provenance")
     assert response.status_code == 200
     assert response.json()["status"] == "not_recorded"
+    validation = _client_with(session_factory).post(
+        f"/api/backtests/{run_id}/walk-forward-validations",
+        json={"warmup_trading_days": 20, "oos_window_trading_days": 20},
+    )
+    assert validation.status_code == 409
+
+
+def test_walk_forward_validation_records_non_pit_run_without_promoting_it():
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "000001", "Ping An Bank", "SZ")
+    _seed_daily_bars(session_factory, "000001", date(2024, 1, 1), date(2024, 6, 30))
+    _seed_index_bars(session_factory, "000300", date(2024, 1, 1), date(2024, 6, 30))
+    client = _client_with(session_factory)
+    run = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "moving_average",
+            "symbols": ["000001"],
+            "benchmark_symbol": "000300",
+            "start_date": "2024-01-01",
+            "end_date": "2024-06-30",
+            "fast_window": 5,
+            "slow_window": 20,
+        },
+    )
+    assert run.status_code == 200
+    run_id = run.json()["run_id"]
+
+    validation = client.post(
+        f"/api/backtests/{run_id}/walk-forward-validations",
+        json={"warmup_trading_days": 20, "oos_window_trading_days": 21, "minimum_windows": 2},
+    )
+
+    assert validation.status_code == 200, validation.text
+    body = validation.json()
+    assert body["eligibility_status"] == "not_eligible_pit_degraded"
+    assert len(body["result"]["window_results"]) >= 2
+    assert len(body["result"]["cost_stress_window_results"]) >= 2
+    history = client.get(f"/api/backtests/{run_id}/walk-forward-validations")
+    assert history.status_code == 200
+    assert history.json()[0]["id"] == body["id"]
+
+
+def test_walk_forward_validation_does_not_promote_a_static_pit_universe():
+    session_factory = _make_session_factory()
+    _seed_stock(session_factory, "000001", "Ping An Bank", "SZ")
+    _seed_daily_bars(session_factory, "000001", date(2024, 1, 1), date(2024, 6, 30))
+    _seed_index_bars(session_factory, "000300", date(2024, 1, 1), date(2024, 6, 30))
+    client = _client_with(session_factory)
+    run = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "moving_average",
+            "symbols": ["000001"],
+            "benchmark_symbol": "000300",
+            "start_date": "2024-01-01",
+            "end_date": "2024-06-30",
+            "fast_window": 5,
+            "slow_window": 20,
+        },
+    )
+    assert run.status_code == 200
+    run_id = run.json()["run_id"]
+    session = session_factory()
+    try:
+        provenance = session.query(BacktestRunProvenance).filter_by(run_id=run_id).one()
+        source = json.loads(provenance.spec_json)
+        source["request"]["symbol_source"] = "research_pool"
+        source["request"]["point_in_time"] = True
+        provenance.spec_json = json.dumps(source, sort_keys=True)
+        provenance.universe_json = json.dumps(
+            {"mode": "pit_initial_universe", "pit_degraded": False, "warmup_degraded": False},
+            sort_keys=True,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    validation = client.post(
+        f"/api/backtests/{run_id}/walk-forward-validations",
+        json={"warmup_trading_days": 20, "oos_window_trading_days": 21, "minimum_windows": 2},
+    )
+
+    assert validation.status_code == 200, validation.text
+    assert validation.json()["eligibility_status"] == "not_eligible_static_pit_universe"
+    assert validation.json()["quality"]["oos_trading_days"] >= 126
 
 
 def test_run_backtest_manual_accepts_stock_name():

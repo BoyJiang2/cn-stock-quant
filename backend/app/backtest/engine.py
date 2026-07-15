@@ -14,6 +14,7 @@ class BacktestConfig:
     start_date: date
     end_date: date
     initial_cash: float
+    evaluation_start_date: date | None = None
     commission_rate: float = 0.0003
     stamp_tax_rate: float = 0.001
     slippage_rate: float = 0.0005
@@ -51,6 +52,9 @@ class DailyBacktestEngine:
         if bars.empty:
             raise ValueError("No daily bars available for the requested backtest range.")
         bars = bars.sort_values(["trade_date", "symbol"])
+        evaluation_start_date = config.evaluation_start_date or config.start_date
+        if evaluation_start_date < config.start_date or evaluation_start_date > config.end_date:
+            raise ValueError("evaluation_start_date must be within the backtest range.")
         dates = sorted(bars["trade_date"].unique())
         next_trade_date = {current: dates[index + 1] for index, current in enumerate(dates[:-1])}
         normalized_benchmark = None
@@ -76,6 +80,10 @@ class DailyBacktestEngine:
             volume_map = {row.symbol: float(row.volume) for row in today.itertuples()}
             tradable_symbols = {symbol for symbol, volume in volume_map.items() if volume > 0}
             last_prices.update(price_map)
+
+            if current_date < evaluation_start_date:
+                previous_close.update(price_map)
+                continue
 
             position_value = _position_value(positions, last_prices)
             equity = cash + position_value
@@ -142,7 +150,11 @@ class DailyBacktestEngine:
             previous_close.update(price_map)
 
         equity_curve = _attach_drawdown(equity_curve)
-        benchmark_curve = _build_benchmark_curve(benchmark_bars, dates, config.initial_cash)
+        benchmark_curve = _build_benchmark_curve(
+            benchmark_bars,
+            [point["trade_date"] for point in equity_curve],
+            config.initial_cash,
+        )
         metrics = _calculate_metrics(equity_curve, config.initial_cash, benchmark_curve)
         return BacktestResult(metrics=metrics, equity_curve=equity_curve, benchmark_curve=benchmark_curve, trades=trades)
 

@@ -106,3 +106,21 @@ class BacktestRunProvenanceOut(BaseModel):
     universe: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] = Field(default_factory=dict)
     warning: str
+
+
+class WalkForwardValidationRequest(BaseModel):
+    warmup_trading_days: int = Field(default=60, ge=20, le=500)
+    oos_window_trading_days: int = Field(default=63, ge=20, le=252)
+    minimum_windows: int = Field(default=2, ge=2, le=12)
+    cost_stress_multiplier: float = Field(default=2.0, ge=1.0, le=5.0)
+
+
+class WalkForwardValidationOut(BaseModel):
+    id: int
+    backtest_run_id: int
+    status: Literal["completed"]
+    eligibility_status: str
+    fingerprint: str
+    spec: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    quality: dict[str, Any] = Field(default_factory=dict)

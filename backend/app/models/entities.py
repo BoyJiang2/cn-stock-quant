@@ -113,6 +113,28 @@ class BacktestRunProvenance(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class BacktestWalkForwardValidation(Base):
+    __tablename__ = "backtest_walk_forward_validations"
+    __table_args__ = (
+        UniqueConstraint(
+            "backtest_run_id",
+            "fingerprint",
+            name="uq_backtest_walk_forward_run_fingerprint",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    backtest_run_id: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="completed")
+    eligibility_status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    spec_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    quality_json: Mapped[str] = mapped_column(Text, default="{}")
+    source_provenance_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BacktestEquity(Base):
     __tablename__ = "backtest_equity"
 

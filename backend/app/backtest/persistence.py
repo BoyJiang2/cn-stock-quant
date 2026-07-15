@@ -5,7 +5,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.backtest.engine import BacktestResult
-from app.models.entities import BacktestEquity, BacktestRun, BacktestRunProvenance, TradeRecord
+from app.models.entities import (
+    BacktestEquity,
+    BacktestRun,
+    BacktestRunProvenance,
+    BacktestWalkForwardValidation,
+    TradeRecord,
+)
 from app.schemas.backtest import BacktestRequest
 
 
@@ -118,6 +124,68 @@ def get_backtest_run(session: Session, run_id: int) -> BacktestRun | None:
 def get_backtest_run_provenance(session: Session, run_id: int) -> BacktestRunProvenance | None:
     stmt = select(BacktestRunProvenance).where(BacktestRunProvenance.run_id == run_id)
     return session.scalar(stmt)
+
+
+def save_walk_forward_validation(
+    session: Session,
+    *,
+    backtest_run_id: int,
+    eligibility_status: str,
+    spec: dict,
+    result: dict,
+    quality: dict,
+    source_provenance_fingerprint: str,
+) -> BacktestWalkForwardValidation:
+    fingerprint_payload = {
+        "backtest_run_id": backtest_run_id,
+        "spec": spec,
+        "result": result,
+        "quality": quality,
+        "source_provenance_fingerprint": source_provenance_fingerprint,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    existing = session.scalar(
+        select(BacktestWalkForwardValidation).where(
+            BacktestWalkForwardValidation.backtest_run_id == backtest_run_id,
+            BacktestWalkForwardValidation.fingerprint == fingerprint,
+        )
+    )
+    if existing is not None:
+        return existing
+    validation = BacktestWalkForwardValidation(
+        backtest_run_id=backtest_run_id,
+        status="completed",
+        eligibility_status=eligibility_status,
+        spec_json=json.dumps(spec, ensure_ascii=True, sort_keys=True, default=str),
+        result_json=json.dumps(result, ensure_ascii=True, sort_keys=True, default=str),
+        quality_json=json.dumps(quality, ensure_ascii=True, sort_keys=True, default=str),
+        source_provenance_fingerprint=source_provenance_fingerprint,
+        fingerprint=fingerprint,
+    )
+    session.add(validation)
+    session.commit()
+    session.refresh(validation)
+    return validation
+
+
+def list_walk_forward_validations(
+    session: Session,
+    backtest_run_id: int,
+) -> list[BacktestWalkForwardValidation]:
+    stmt = (
+        select(BacktestWalkForwardValidation)
+        .where(BacktestWalkForwardValidation.backtest_run_id == backtest_run_id)
+        .order_by(BacktestWalkForwardValidation.created_at.desc())
+    )
+    return list(session.scalars(stmt))
 
 
 def get_backtest_equity(session: Session, run_id: int) -> list[BacktestEquity]:

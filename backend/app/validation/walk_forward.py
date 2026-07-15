@@ -13,6 +13,36 @@ class ValidationWindow:
     name: str
     start_date: date
     end_date: date
+    warmup_start_date: date | None = None
+
+
+def rolling_oos_windows(
+    trading_dates: list[date],
+    *,
+    warmup_trading_days: int,
+    oos_window_trading_days: int,
+) -> list[ValidationWindow]:
+    """Build non-overlapping OOS windows with trailing history-only warm-up."""
+    if warmup_trading_days < 1 or oos_window_trading_days < 1:
+        raise ValueError("warmup_trading_days and oos_window_trading_days must be positive")
+    dates = sorted(set(trading_dates))
+    first_oos_index = warmup_trading_days
+    if len(dates) < first_oos_index + oos_window_trading_days:
+        return []
+
+    windows: list[ValidationWindow] = []
+    index = first_oos_index
+    while index + oos_window_trading_days <= len(dates):
+        windows.append(
+            ValidationWindow(
+                name=f"oos_{len(windows) + 1:02d}",
+                start_date=dates[index],
+                end_date=dates[index + oos_window_trading_days - 1],
+                warmup_start_date=dates[index - warmup_trading_days],
+            )
+        )
+        index += oos_window_trading_days
+    return windows
 
 
 def run_walk_forward(
@@ -28,8 +58,9 @@ def run_walk_forward(
             raise ValueError(f"invalid validation window {window.name}: start_date is after end_date")
         config = replace(
             base_config,
-            start_date=window.start_date,
+            start_date=window.warmup_start_date or window.start_date,
             end_date=window.end_date,
+            evaluation_start_date=window.start_date,
         )
         result = DailyBacktestEngine().run(
             strategy=deepcopy(strategy),

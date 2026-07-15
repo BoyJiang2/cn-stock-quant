@@ -4,7 +4,7 @@ import pandas as pd
 
 from app.backtest.engine import BacktestConfig
 from app.strategy.base import Strategy, StrategyContext
-from app.validation.walk_forward import ValidationWindow, run_cost_stress, run_walk_forward
+from app.validation.walk_forward import ValidationWindow, rolling_oos_windows, run_cost_stress, run_walk_forward
 
 
 class AlwaysLong(Strategy):
@@ -90,3 +90,19 @@ def test_validation_does_not_mutate_stateful_strategy():
         [ValidationWindow("all", date(2024, 1, 1), date(2024, 1, 12))],
     )
     assert strategy.calls == 0
+
+
+def test_rolling_oos_windows_use_only_prior_history_as_warmup():
+    dates = [date(2024, 1, 1) + timedelta(days=index) for index in range(12)]
+
+    windows = rolling_oos_windows(
+        dates,
+        warmup_trading_days=3,
+        oos_window_trading_days=3,
+    )
+
+    assert [(window.warmup_start_date, window.start_date, window.end_date) for window in windows] == [
+        (date(2024, 1, 1), date(2024, 1, 4), date(2024, 1, 6)),
+        (date(2024, 1, 4), date(2024, 1, 7), date(2024, 1, 9)),
+        (date(2024, 1, 7), date(2024, 1, 10), date(2024, 1, 12)),
+    ]

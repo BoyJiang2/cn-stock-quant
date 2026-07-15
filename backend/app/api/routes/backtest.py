@@ -1,5 +1,6 @@
 import json
 from datetime import date, datetime, time, timedelta
+from statistics import fmean
 
 from fastapi import APIRouter, Depends, HTTPException
 import pandas as pd
@@ -12,15 +13,28 @@ from app.backtest.persistence import (
     get_backtest_run_provenance,
     get_backtest_trades,
     list_backtest_runs,
+    list_walk_forward_validations,
     save_backtest_result,
+    save_walk_forward_validation,
 )
 from app.core.database import get_session
 from app.data.akshare_provider import AkShareProvider
 from app.data.pit_repository import PitRepository
 from app.data.repository import MarketDataRepository
 from app.data.symbols import INDEX_SYMBOL_WHITELIST, normalize_a_share_symbol
-from app.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResponse, BacktestRunOut, BacktestRunProvenanceOut, EquityPoint, TradeOut
+from app.schemas.backtest import (
+    BacktestMetrics,
+    BacktestRequest,
+    BacktestResponse,
+    BacktestRunOut,
+    BacktestRunProvenanceOut,
+    EquityPoint,
+    TradeOut,
+    WalkForwardValidationOut,
+    WalkForwardValidationRequest,
+)
 from app.strategy.registry import get_strategy
+from app.validation import rolling_oos_windows, run_walk_forward
 
 router = APIRouter()
 
@@ -364,6 +378,191 @@ def list_runs(limit: int = 50, session: Session = Depends(get_session)):
     ]
 
 
+@router.post("/{run_id}/walk-forward-validations", response_model=WalkForwardValidationOut)
+def run_walk_forward_validation(
+    run_id: int,
+    payload: WalkForwardValidationRequest,
+    session: Session = Depends(get_session),
+):
+    run = get_backtest_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Backtest run not found.")
+    provenance = get_backtest_run_provenance(session, run_id)
+    if provenance is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This legacy backtest has no immutable provenance record.",
+        )
+
+    source_spec = json.loads(provenance.spec_json)
+    source_request = BacktestRequest.model_validate(source_spec["request"])
+    selected_symbols = list(source_spec.get("selected_symbols", []))
+    if not selected_symbols:
+        raise HTTPException(status_code=409, detail="The provenance record has no selected symbols.")
+
+    repository = MarketDataRepository(session)
+    bars = repository.daily_bars(selected_symbols, source_request.start_date, source_request.end_date)
+    if bars.empty:
+        raise HTTPException(status_code=409, detail="Local bars for this recorded backtest are no longer available.")
+    bars = bars.copy()
+    bars["trade_date"] = pd.to_datetime(bars["trade_date"]).dt.date
+    trading_dates = sorted(bars["trade_date"].unique())
+    windows = rolling_oos_windows(
+        trading_dates,
+        warmup_trading_days=payload.warmup_trading_days,
+        oos_window_trading_days=payload.oos_window_trading_days,
+    )
+
+    benchmark_bars = None
+    benchmark_complete = False
+    if source_request.benchmark_symbol:
+        benchmark_bars = repository.index_daily_bars(
+            source_request.benchmark_symbol,
+            source_request.start_date,
+            source_request.end_date,
+        )
+        benchmark_dates = (
+            set(pd.to_datetime(benchmark_bars["trade_date"]).dt.date)
+            if not benchmark_bars.empty
+            else set()
+        )
+        benchmark_complete = all(
+            window.start_date in benchmark_dates and window.end_date in benchmark_dates
+            for window in windows
+        )
+
+    strategy = get_strategy(source_request.strategy_name)
+    strategy_params = source_request.strategy_parameters()
+    news_history = _load_negative_news_history(
+        repository,
+        selected_symbols,
+        start_date=source_request.start_date,
+        end_date=source_request.end_date,
+        params=strategy_params,
+    )
+    base_config = BacktestConfig(
+        start_date=source_request.start_date,
+        end_date=source_request.end_date,
+        initial_cash=source_request.initial_cash,
+        commission_rate=source_request.commission_rate,
+        stamp_tax_rate=source_request.stamp_tax_rate,
+        slippage_rate=source_request.slippage_rate,
+        rebalance_interval=source_request.rebalance_interval,
+        risk_max_symbol_weight=source_request.risk_max_symbol_weight,
+        risk_max_total_weight=source_request.risk_max_total_weight,
+        risk_max_positions=source_request.risk_max_positions,
+        params=strategy_params,
+        news_history=news_history,
+    )
+    try:
+        window_results = run_walk_forward(
+            strategy,
+            bars,
+            base_config,
+            windows,
+            benchmark_bars=benchmark_bars,
+        )
+        stressed_results = run_walk_forward(
+            strategy,
+            bars,
+            BacktestConfig(
+                **{
+                    **base_config.__dict__,
+                    "commission_rate": base_config.commission_rate * payload.cost_stress_multiplier,
+                    "stamp_tax_rate": base_config.stamp_tax_rate * payload.cost_stress_multiplier,
+                    "slippage_rate": base_config.slippage_rate * payload.cost_stress_multiplier,
+                }
+            ),
+            windows,
+            benchmark_bars=benchmark_bars,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    universe = json.loads(provenance.universe_json)
+    total_oos_trading_days = len(windows) * payload.oos_window_trading_days
+    quality_flags: list[str] = []
+    if source_request.symbol_source != "research_pool" or not source_request.point_in_time:
+        quality_flags.append("source backtest was not built from a point-in-time research universe")
+    if universe.get("mode") != "pit_initial_universe" or universe.get("pit_degraded", True):
+        quality_flags.append("point-in-time universe metadata is degraded or unavailable")
+    if universe.get("warmup_degraded", False):
+        quality_flags.append("source PIT universe used a degraded warm-up fallback")
+    if universe.get("mode") == "pit_initial_universe":
+        quality_flags.append("PIT universe is fixed at the backtest start and is not rebuilt for each OOS window")
+    if not source_request.benchmark_symbol or not benchmark_complete:
+        quality_flags.append("local benchmark does not cover every OOS window boundary")
+    if len(windows) < payload.minimum_windows:
+        quality_flags.append("fewer than the requested number of independent OOS windows were available")
+    if total_oos_trading_days < 126:
+        quality_flags.append("fewer than 126 OOS trading days were available")
+
+    if any("fixed at the backtest start" in flag for flag in quality_flags):
+        eligibility_status = "not_eligible_static_pit_universe"
+    elif any("point-in-time" in flag for flag in quality_flags):
+        eligibility_status = "not_eligible_pit_degraded"
+    elif any("benchmark" in flag for flag in quality_flags):
+        eligibility_status = "not_eligible_benchmark_missing"
+    elif any("OOS" in flag for flag in quality_flags):
+        eligibility_status = "not_eligible_insufficient_oos_history"
+    else:
+        eligibility_status = "eligible"
+
+    spec = {
+        "source_backtest_run_id": run_id,
+        "source_provenance_fingerprint": provenance.fingerprint,
+        "strategy_name": source_request.strategy_name,
+        "strategy_parameters": strategy_params,
+        "selected_symbols": selected_symbols,
+        "benchmark_symbol": source_request.benchmark_symbol,
+        "window_protocol": payload.model_dump(mode="json"),
+        "windows": [
+            {
+                "name": window.name,
+                "warmup_start_date": window.warmup_start_date,
+                "oos_start_date": window.start_date,
+                "oos_end_date": window.end_date,
+            }
+            for window in windows
+        ],
+    }
+    result = {
+        "window_results": window_results,
+        "cost_stress_multiplier": payload.cost_stress_multiplier,
+        "cost_stress_window_results": stressed_results,
+        "aggregate": _aggregate_validation_metrics(window_results),
+        "cost_stress_aggregate": _aggregate_validation_metrics(stressed_results),
+    }
+    quality = {
+        "eligibility_status": eligibility_status,
+        "quality_flags": quality_flags,
+        "window_count": len(windows),
+        "oos_trading_days": total_oos_trading_days,
+        "benchmark_complete": benchmark_complete,
+        "news_availability": strategy_params.get("news_availability", "observed"),
+    }
+    validation = save_walk_forward_validation(
+        session,
+        backtest_run_id=run_id,
+        eligibility_status=eligibility_status,
+        spec=spec,
+        result=result,
+        quality=quality,
+        source_provenance_fingerprint=provenance.fingerprint,
+    )
+    return _walk_forward_validation_out(validation)
+
+
+@router.get("/{run_id}/walk-forward-validations", response_model=list[WalkForwardValidationOut])
+def list_run_walk_forward_validations(run_id: int, session: Session = Depends(get_session)):
+    if get_backtest_run(session, run_id) is None:
+        raise HTTPException(status_code=404, detail="Backtest run not found.")
+    return [
+        _walk_forward_validation_out(validation)
+        for validation in list_walk_forward_validations(session, run_id)
+    ]
+
+
 @router.get("/{run_id}/provenance", response_model=BacktestRunProvenanceOut)
 def get_run_provenance(run_id: int, session: Session = Depends(get_session)):
     run = get_backtest_run(session, run_id)
@@ -384,6 +583,34 @@ def get_run_provenance(run_id: int, session: Session = Depends(get_session)):
         universe=json.loads(provenance.universe_json),
         result=json.loads(provenance.result_json),
         warning="This run is reproducibly recorded but is not walk-forward out-of-sample validation evidence.",
+    )
+
+
+def _aggregate_validation_metrics(results: list[dict]) -> dict[str, float]:
+    metric_names = (
+        "total_return",
+        "annual_return",
+        "max_drawdown",
+        "sharpe",
+        "benchmark_return",
+        "excess_return",
+    )
+    return {
+        name: round(fmean(float(item["metrics"].get(name, 0.0)) for item in results), 6)
+        for name in metric_names
+    } if results else {}
+
+
+def _walk_forward_validation_out(validation) -> WalkForwardValidationOut:
+    return WalkForwardValidationOut(
+        id=validation.id,
+        backtest_run_id=validation.backtest_run_id,
+        status="completed",
+        eligibility_status=validation.eligibility_status,
+        fingerprint=validation.fingerprint,
+        spec=json.loads(validation.spec_json),
+        result=json.loads(validation.result_json),
+        quality=json.loads(validation.quality_json),
     )
 
 

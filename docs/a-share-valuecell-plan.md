@@ -79,8 +79,12 @@ that is constrained to the already risk-gated trade-plan draft.
 - [x] P1-3b-2a Persist immutable provenance for each new backtest: request,
   selected symbols, PIT/universe metadata, benchmark metrics, and a content
   fingerprint. Legacy runs are explicitly marked as not recorded.
-- [ ] P1-3b-2b Add walk-forward out-of-sample validation metadata and attach
-  only an explicitly selected, eligible result to advisory context.
+- [x] P1-3b-2b Add fixed-parameter rolling OOS diagnostics with prior-history
+  warm-up, independent strategy instances, local benchmark checks, 1x/2x cost
+  stress, immutable records, and explicit non-eligibility reasons.
+- [ ] P1-3b-2c Rebuild the PIT universe for every OOS window. Only then may a
+  user-selected eligible record be attached to advisory context after strategy,
+  parameter, and as-of-date matching.
 - [x] P1-4 Add an LLM prompt/result contract that constrains it to a
   risk-gated trade-plan explanation and non-binding risk rationale.
 - [x] P1-5 Add streamed report events to the web API.
