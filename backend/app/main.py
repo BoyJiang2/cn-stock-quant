@@ -1,5 +1,7 @@
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
     advisory,
@@ -11,6 +13,7 @@ from app.api.routes import (
     pit,
     strategies,
 )
+from app.core.config import PROJECT_ROOT
 from app.core.database import init_db
 
 
@@ -25,7 +28,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(health.router, tags=["health"])
     app.include_router(data.router, prefix="/api/data", tags=["data"])
     app.include_router(strategies.router, prefix="/api/strategies", tags=["strategies"])
     app.include_router(backtest.router, prefix="/api/backtests", tags=["backtests"])
@@ -33,6 +35,18 @@ def create_app() -> FastAPI:
     app.include_router(ai_research.router, prefix="/api/ai-research", tags=["ai-research"])
     app.include_router(advisory.router, prefix="/api/advisory", tags=["advisory"])
     app.include_router(pit.router, prefix="/api/data/pit", tags=["pit"])
+
+    frontend_dist = PROJECT_ROOT / "frontend" / "dist"
+    assets_dir = frontend_dist / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    if (frontend_dist / "index.html").is_file():
+        @app.get("/", include_in_schema=False)
+        def frontend_index() -> FileResponse:
+            return FileResponse(frontend_dist / "index.html")
+
+    app.include_router(health.router, tags=["health"])
 
     @app.on_event("startup")
     def on_startup() -> None:
