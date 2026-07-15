@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
@@ -10,7 +10,15 @@ from app.core.database import get_session
 from app.core.config import settings as app_settings
 from app.ai_advisory.service import create_advisory, stream_advisory_summary
 from app.main import create_app
-from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun, Base, DailyBar, Stock
+from app.models.entities import (
+    AdvisoryNotificationDelivery,
+    AdvisoryRun,
+    Base,
+    DailyBar,
+    IndexDailyBar,
+    NewsItem,
+    Stock,
+)
 from app.notifications import NotificationReceipt
 from app.schemas.advisory import AdvisoryRequest
 
@@ -60,6 +68,58 @@ def _seed_bars(session_factory: sessionmaker, symbol: str, as_of_date: date) -> 
                     adj="qfq",
                 )
             )
+        session.commit()
+    finally:
+        session.close()
+
+
+def _seed_index_bars(session_factory: sessionmaker, as_of_date: date) -> None:
+    session = session_factory()
+    try:
+        for index in range(130):
+            trade_date = as_of_date - timedelta(days=129 - index)
+            close = 3000.0 + index * 2.0
+            session.add(
+                IndexDailyBar(
+                    symbol="000300",
+                    trade_date=trade_date,
+                    open=close,
+                    high=close,
+                    low=close,
+                    close=close,
+                    volume=1000.0,
+                    amount=100_000.0,
+                )
+            )
+        session.commit()
+    finally:
+        session.close()
+
+
+def _seed_news(
+    session_factory: sessionmaker,
+    *,
+    symbol: str,
+    source_id: str,
+    published_at: datetime,
+    fetched_at: datetime,
+    event_type: str,
+) -> None:
+    session = session_factory()
+    try:
+        session.add(
+            NewsItem(
+                source="test_news",
+                source_id=source_id,
+                symbol=symbol,
+                title=f"{event_type} test news",
+                body="",
+                event_type=event_type,
+                sentiment_label="negative" if event_type != "neutral" else "",
+                published_at=published_at,
+                fetched_at=fetched_at,
+            )
+        )
         session.commit()
     finally:
         session.close()
@@ -132,6 +192,50 @@ def test_advisory_retains_deterministic_draft_when_remote_llm_is_not_enabled():
     assert any("Remote LLM was requested" in warning for warning in body["warnings"])
 
 
+def test_advisory_snapshot_uses_only_market_and_news_known_by_as_of_date():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    _seed_index_bars(session_factory, as_of_date)
+    _seed_news(
+        session_factory,
+        symbol="000001",
+        source_id="known-severe",
+        published_at=datetime(2026, 7, 13, 9, 0),
+        fetched_at=datetime(2026, 7, 13, 9, 5),
+        event_type="severe_company_risk",
+    )
+    _seed_news(
+        session_factory,
+        symbol="000001",
+        source_id="future-observed",
+        published_at=datetime(2026, 7, 13, 10, 0),
+        fetched_at=datetime(2026, 7, 15, 9, 0),
+        event_type="company_risk",
+    )
+
+    response = _client(session_factory).post(
+        "/api/advisory/drafts",
+        json={
+            "strategy_name": "moving_average",
+            "as_of_date": as_of_date.isoformat(),
+            "symbols": ["000001"],
+            "cash": 100_000,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["market_evidence"]["available"] is True
+    assert body["market_evidence"]["data_end_date"] == as_of_date.isoformat()
+    assert body["news_evidence"]["availability_mode"] == "observed"
+    assert body["news_evidence"]["severe_company_risk_count"] == 1
+    assert body["news_evidence"]["company_risk_count"] == 0
+    assert [item["title"] for item in body["news_evidence"]["items"]] == [
+        "severe_company_risk test news"
+    ]
+
+
 def test_advisory_requires_an_as_of_close_for_every_selected_symbol():
     session_factory = _session_factory()
     _seed_bars(session_factory, "000001", date(2026, 7, 13))
@@ -177,6 +281,8 @@ def test_advisory_stream_persists_text_from_the_provider():
         def stream_text(self, *, system_prompt: str, user_prompt: str):
             assert "risk-gated" in system_prompt
             assert '"strategy_name": "moving_average"' in user_prompt
+            assert '"market_evidence"' in user_prompt
+            assert '"news_evidence"' in user_prompt
             yield "First part. "
             yield "Second part."
 

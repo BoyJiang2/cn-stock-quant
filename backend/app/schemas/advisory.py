@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -33,6 +33,41 @@ class AdvisoryTradeOut(BaseModel):
     estimated_amount: float
 
 
+class MarketEvidenceOut(BaseModel):
+    available: bool
+    benchmark_symbol: str = "000300"
+    as_of_date: date
+    data_end_date: date | None = None
+    regime: str | None = None
+    confidence: float | None = None
+    trend_score: float | None = None
+    breadth_score: float | None = None
+    volatility_score: float | None = None
+    drawdown: float | None = None
+    reasons: list[str] = Field(default_factory=list)
+    warning: str | None = None
+
+
+class NewsEvidenceItemOut(BaseModel):
+    symbol: str | None = None
+    source: str
+    title: str
+    event_type: str
+    sentiment_label: str
+    published_at: datetime
+    known_at: datetime
+
+
+class NewsEvidenceOut(BaseModel):
+    availability_mode: Literal["observed"] = "observed"
+    window_start: datetime
+    as_of_at: datetime
+    total_items: int = 0
+    severe_company_risk_count: int = 0
+    company_risk_count: int = 0
+    items: list[NewsEvidenceItemOut] = Field(default_factory=list)
+
+
 class AdvisoryResponse(BaseModel):
     id: int
     status: Literal["draft", "llm_disabled", "failed"]
@@ -45,6 +80,8 @@ class AdvisoryResponse(BaseModel):
     accepted_target_weights: dict[str, float]
     rejected_target_weights: dict[str, str]
     trade_plan: list[AdvisoryTradeOut]
+    market_evidence: MarketEvidenceOut
+    news_evidence: NewsEvidenceOut
     warnings: list[str] = Field(default_factory=list)
     remote_llm_enabled: bool = False
     llm_summary: str | None = None

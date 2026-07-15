@@ -65,12 +65,16 @@ that is constrained to the already risk-gated trade-plan draft.
 
 ### P1: A-share Research Copilot
 
-- [ ] P1-1 Build a reproducible current-date portfolio/market evidence
-  snapshot from local data.
+- [x] P1-1 Build a reproducible current-date portfolio/market evidence
+  snapshot from local data, including CSI 300 regime data and the user
+  portfolio valuation basis.
 - [x] P1-2 Generate strategy target weights from a selected registered
   strategy, then apply `RiskEngine` and `build_trade_plan`.
-- [ ] P1-3 Add market regime, news, factor, and backtest evidence to the
-  advisory context with source timestamps.
+- [x] P1-3a Add market-regime and observed-news evidence with source/known
+  timestamps to the advisory snapshot and LLM context. News is restricted to
+  items known no later than the advisory date to prevent future leakage.
+- [ ] P1-3b Add point-in-time factor and out-of-sample backtest evidence to
+  the advisory context with source timestamps.
 - [x] P1-4 Add an LLM prompt/result contract that constrains it to a
   risk-gated trade-plan explanation and non-binding risk rationale.
 - [x] P1-5 Add streamed report events to the web API.

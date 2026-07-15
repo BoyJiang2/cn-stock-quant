@@ -59,6 +59,41 @@ interface AdvisoryTrade {
   estimated_amount: number;
 }
 
+interface MarketEvidence {
+  available: boolean;
+  benchmark_symbol: string;
+  as_of_date: string;
+  data_end_date: string | null;
+  regime: string | null;
+  confidence: number | null;
+  trend_score: number | null;
+  breadth_score: number | null;
+  volatility_score: number | null;
+  drawdown: number | null;
+  reasons: string[];
+  warning: string | null;
+}
+
+interface NewsEvidenceItem {
+  symbol: string | null;
+  source: string;
+  title: string;
+  event_type: string;
+  sentiment_label: string;
+  published_at: string;
+  known_at: string;
+}
+
+interface NewsEvidence {
+  availability_mode: "observed";
+  window_start: string;
+  as_of_at: string;
+  total_items: number;
+  severe_company_risk_count: number;
+  company_risk_count: number;
+  items: NewsEvidenceItem[];
+}
+
 interface AdvisoryDraft {
   id: number;
   status: "draft" | "llm_disabled" | "failed";
@@ -71,6 +106,8 @@ interface AdvisoryDraft {
   accepted_target_weights: Record<string, number>;
   rejected_target_weights: Record<string, string>;
   trade_plan: AdvisoryTrade[];
+  market_evidence: MarketEvidence;
+  news_evidence: NewsEvidence;
   warnings: string[];
   remote_llm_enabled: boolean;
   llm_summary: string | null;
@@ -353,6 +390,55 @@ export function AdvisoryPage() {
               <Descriptions.Item label="人工确认">必须确认后才可进入模拟盘流程</Descriptions.Item>
             </Descriptions>
             {draft.warnings.map((warning) => <Alert key={warning} message={warning} showIcon type="warning" style={{ marginTop: 10 }} />)}
+          </Card>
+
+          <Card className="panel" title="证据快照">
+            <Descriptions column={{ xs: 1, sm: 2, lg: 4 }} size="small">
+              <Descriptions.Item label="市场状态">
+                {draft.market_evidence.available
+                  ? <Tag color="blue">{draft.market_evidence.regime}</Tag>
+                  : <Tag>本地指数数据不足</Tag>}
+              </Descriptions.Item>
+              <Descriptions.Item label="市场置信度">
+                {draft.market_evidence.confidence === null ? "-" : `${(draft.market_evidence.confidence * 100).toFixed(1)}%`}
+              </Descriptions.Item>
+              <Descriptions.Item label="市场数据截至">
+                {draft.market_evidence.data_end_date || "-"}
+              </Descriptions.Item>
+              <Descriptions.Item label="新闻窗口">
+                {`${dayjs(draft.news_evidence.window_start).format("MM-DD HH:mm")} 至 ${dayjs(draft.news_evidence.as_of_at).format("MM-DD HH:mm")}`}
+              </Descriptions.Item>
+              <Descriptions.Item label="严重公司风险">
+                <Tag color={draft.news_evidence.severe_company_risk_count > 0 ? "red" : "default"}>{draft.news_evidence.severe_company_risk_count}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="一般公司风险">
+                <Tag color={draft.news_evidence.company_risk_count > 0 ? "orange" : "default"}>{draft.news_evidence.company_risk_count}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="可见新闻条数">
+                {draft.news_evidence.total_items}
+              </Descriptions.Item>
+              <Descriptions.Item label="新闻可用性">截至决策日已观测</Descriptions.Item>
+            </Descriptions>
+            {draft.market_evidence.warning && <Alert message={draft.market_evidence.warning} showIcon type="warning" style={{ marginTop: 10 }} />}
+            {draft.market_evidence.reasons.length > 0 && (
+              <Text type="secondary" style={{ display: "block", marginTop: 10 }}>
+                {draft.market_evidence.reasons.join(" | ")}
+              </Text>
+            )}
+            <Table
+              columns={[
+                { title: "代码", dataIndex: "symbol", width: 100, render: (value: string | null) => value || "市场" },
+                { title: "事件", dataIndex: "event_type", width: 150 },
+                { title: "标题", dataIndex: "title" },
+                { title: "已知时间", dataIndex: "known_at", width: 180, render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm") }
+              ]}
+              dataSource={draft.news_evidence.items}
+              locale={{ emptyText: "决策日前 7 天没有已观测的相关新闻" }}
+              pagination={false}
+              rowKey={(row) => `${row.source}-${row.title}-${row.known_at}`}
+              size="small"
+              style={{ marginTop: 16 }}
+            />
           </Card>
 
           <Card className="panel" title="风控后目标权重">

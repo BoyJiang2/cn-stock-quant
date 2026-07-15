@@ -2,18 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from math import isfinite
 
 import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.ai_advisory.providers import TextStreamingProvider
+from app.ai_research.market_regime import MarketRegimeAnalyzer
 from app.data.repository import MarketDataRepository
 from app.models.entities import AdvisoryRun
 from app.portfolio.trade_plan import build_trade_plan
 from app.risk.rules import RiskConfig, RiskEngine
-from app.schemas.advisory import AdvisoryRequest, AdvisoryResponse, AdvisoryTradeOut
+from app.schemas.advisory import (
+    AdvisoryRequest,
+    AdvisoryResponse,
+    AdvisoryTradeOut,
+    MarketEvidenceOut,
+    NewsEvidenceItemOut,
+    NewsEvidenceOut,
+)
 from app.strategy.base import StrategyContext
 from app.strategy.registry import get_strategy
 
@@ -60,6 +68,13 @@ def create_advisory(
     if total_equity <= 0:
         raise AdvisoryInputError("cash plus marked-to-market positions must be positive")
 
+    market_evidence, benchmark_history = _market_evidence(
+        repository,
+        payload.as_of_date,
+        payload.lookback_calendar_days,
+    )
+    news_evidence = _news_evidence(repository, symbols, payload.as_of_date)
+
     try:
         strategy = get_strategy(payload.strategy_name)
         raw_target_weights = strategy.generate_target_weights(
@@ -68,6 +83,7 @@ def create_advisory(
                 cash=float(payload.cash),
                 positions=positions.copy(),
                 params=dict(payload.strategy_parameters),
+                benchmark_history=benchmark_history,
             ),
             bars,
         )
@@ -117,7 +133,15 @@ def create_advisory(
         request_hash=hashlib.sha256(request_json.encode("utf-8")).hexdigest(),
         request_json=request_json,
         risk_json=json.dumps(
-            {"raw": normalized_weights, "accepted": risk.accepted, "rejected": risk.rejected},
+            {
+                "raw": normalized_weights,
+                "accepted": risk.accepted,
+                "rejected": risk.rejected,
+                "evidence": {
+                    "market": market_evidence.model_dump(mode="json"),
+                    "news": news_evidence.model_dump(mode="json"),
+                },
+            },
             ensure_ascii=True,
             sort_keys=True,
         ),
@@ -143,6 +167,8 @@ def create_advisory(
         accepted_target_weights=risk.accepted,
         rejected_target_weights=risk.rejected,
         trade_plan=[AdvisoryTradeOut(**item.__dict__) for item in plan],
+        market_evidence=market_evidence,
+        news_evidence=news_evidence,
         warnings=warnings,
         remote_llm_enabled=payload.allow_remote_llm and remote_llm_available,
         llm_summary=None,
@@ -197,6 +223,7 @@ def _advisory_user_prompt(record: AdvisoryRun) -> str:
     request = json.loads(record.request_json)
     risk = json.loads(record.risk_json)
     plan = json.loads(record.trade_plan_json)
+    evidence = risk.get("evidence", {})
     accepted = {
         symbol: weight
         for symbol, weight in risk.get("accepted", {}).items()
@@ -217,6 +244,8 @@ def _advisory_user_prompt(record: AdvisoryRun) -> str:
                 ),
                 "rejected": dict(list(risk.get("rejected", {}).items())[:20]),
             },
+            "market_evidence": evidence.get("market", {}),
+            "news_evidence": _compact_news_evidence(evidence.get("news", {})),
             "research_close_trade_plan": sorted(
                 plan,
                 key=lambda item: float(item.get("estimated_amount", 0.0)),
@@ -227,6 +256,114 @@ def _advisory_user_prompt(record: AdvisoryRun) -> str:
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+def _market_evidence(
+    repository: MarketDataRepository,
+    as_of_date: date,
+    lookback_calendar_days: int,
+) -> tuple[MarketEvidenceOut, pd.DataFrame | None]:
+    start_date = as_of_date - timedelta(days=max(120, lookback_calendar_days))
+    bars = repository.index_daily_bars("000300", start_date, as_of_date)
+    if bars.empty:
+        return (
+            MarketEvidenceOut(
+                available=False,
+                as_of_date=as_of_date,
+                warning="No local CSI 300 bars are available for market-regime evidence.",
+            ),
+            None,
+        )
+    bars = bars.copy()
+    bars["trade_date"] = pd.to_datetime(bars["trade_date"]).dt.date
+    data_end_date = max(bars["trade_date"])
+    if data_end_date != as_of_date:
+        return (
+            MarketEvidenceOut(
+                available=False,
+                as_of_date=as_of_date,
+                data_end_date=data_end_date,
+                warning="CSI 300 local bars do not cover the advisory as-of date.",
+            ),
+            bars,
+        )
+    result = MarketRegimeAnalyzer().analyze(bars)
+    return (
+        MarketEvidenceOut(
+            available=True,
+            as_of_date=as_of_date,
+            data_end_date=data_end_date,
+            regime=result.regime,
+            confidence=result.confidence,
+            trend_score=result.trend_score,
+            breadth_score=result.breadth_score,
+            volatility_score=result.volatility_score,
+            drawdown=result.drawdown,
+            reasons=result.reasons[:6],
+        ),
+        bars,
+    )
+
+
+def _news_evidence(
+    repository: MarketDataRepository,
+    symbols: list[str],
+    as_of_date: date,
+) -> NewsEvidenceOut:
+    as_of_at = datetime.combine(as_of_date, time.max)
+    window_start = datetime.combine(as_of_date - timedelta(days=7), time.min)
+    frames = [
+        repository.news_items(symbol=symbol, known_end_at=as_of_at, limit=100)
+        for symbol in symbols
+    ]
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        return NewsEvidenceOut(window_start=window_start, as_of_at=as_of_at)
+
+    news = pd.concat(frames, ignore_index=True)
+    news["published_at"] = pd.to_datetime(news["published_at"], errors="coerce")
+    news["fetched_at"] = pd.to_datetime(news["fetched_at"], errors="coerce")
+    news["known_at"] = news[["published_at", "fetched_at"]].max(axis=1)
+    news = news[(news["known_at"] >= window_start) & (news["known_at"] <= as_of_at)]
+    if news.empty:
+        return NewsEvidenceOut(window_start=window_start, as_of_at=as_of_at)
+
+    priority = {"severe_company_risk": 0, "company_risk": 1}
+    news["priority"] = news["event_type"].map(priority).fillna(2)
+    news = news.sort_values(["priority", "known_at"], ascending=[True, False])
+    items = [
+        NewsEvidenceItemOut(
+            symbol=row.symbol,
+            source=row.source,
+            title=row.title,
+            event_type=row.event_type,
+            sentiment_label=row.sentiment_label,
+            published_at=row.published_at.to_pydatetime(),
+            known_at=row.known_at.to_pydatetime(),
+        )
+        for row in news.head(20).itertuples()
+    ]
+    return NewsEvidenceOut(
+        window_start=window_start,
+        as_of_at=as_of_at,
+        total_items=int(len(news)),
+        severe_company_risk_count=int((news["event_type"] == "severe_company_risk").sum()),
+        company_risk_count=int((news["event_type"] == "company_risk").sum()),
+        items=items,
+    )
+
+
+def _compact_news_evidence(evidence: dict) -> dict:
+    return {
+        "availability_mode": evidence.get("availability_mode", "observed"),
+        "window_start": evidence.get("window_start"),
+        "as_of_at": evidence.get("as_of_at"),
+        "total_items": evidence.get("total_items", 0),
+        "severe_company_risk_count": evidence.get("severe_company_risk_count", 0),
+        "company_risk_count": evidence.get("company_risk_count", 0),
+        "items": list(evidence.get("items", []))[:10],
+        "truncated": len(evidence.get("items", [])) > 10,
+    }
 
 
 def _amount_band(value: float) -> str:
