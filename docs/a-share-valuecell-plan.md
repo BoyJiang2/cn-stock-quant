@@ -86,8 +86,9 @@ that is constrained to the already risk-gated trade-plan draft.
   trading calendar. Persist each window's PIT metadata, selected symbols, and
   market/benchmark/news input fingerprints; only fully covered, non-degraded
   windows may be eligible evidence.
-- [ ] P1-3b-2d Allow a user-selected eligible OOS record to be attached to
-  advisory context only after strategy, parameter, and as-of-date matching.
+- [x] P1-3b-2d Allow a user-selected eligible OOS record to be attached to
+  advisory context only after exact strategy, parameter, and final OOS cutoff
+  matching. Store its immutable evidence snapshot with the advisory draft.
 - [x] P1-4 Add an LLM prompt/result contract that constrains it to a
   risk-gated trade-plan explanation and non-binding risk rationale.
 - [x] P1-5 Add streamed report events to the web API.

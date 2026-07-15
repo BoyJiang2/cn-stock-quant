@@ -40,6 +40,7 @@ interface AdvisoryPosition {
 interface AdvisoryFormValues {
   strategy_name: string;
   as_of_date: dayjs.Dayjs;
+  validation_id?: number;
   symbols: string;
   cash: number;
   positions: AdvisoryPosition[];
@@ -117,6 +118,20 @@ interface FactorEvidence {
   warnings: string[];
 }
 
+interface EligibleValidationOption {
+  id: number;
+  backtest_run_id: number;
+  strategy_name: string;
+  as_of_date: string;
+  strategy_parameters: Record<string, unknown>;
+  aggregate: Record<string, number>;
+}
+
+interface ValidationEvidence {
+  validation_id: number;
+  aggregate: Record<string, number>;
+}
+
 interface AdvisoryDraft {
   id: number;
   status: "draft" | "llm_disabled" | "failed";
@@ -132,6 +147,7 @@ interface AdvisoryDraft {
   market_evidence: MarketEvidence;
   news_evidence: NewsEvidence;
   factor_evidence: FactorEvidence;
+  validation_evidence: ValidationEvidence | null;
   warnings: string[];
   remote_llm_enabled: boolean;
   llm_summary: string | null;
@@ -174,6 +190,10 @@ export function AdvisoryPage() {
   const [form] = Form.useForm<AdvisoryFormValues>();
   const [strategies, setStrategies] = useState<StrategyItem[]>([]);
   const [capabilities, setCapabilities] = useState<AdvisoryCapabilities | null>(null);
+  const [eligibleValidations, setEligibleValidations] = useState<EligibleValidationOption[]>([]);
+  const [selectedValidation, setSelectedValidation] = useState<EligibleValidationOption | null>(null);
+  const [loadingValidations, setLoadingValidations] = useState(false);
+  const [validationLoadError, setValidationLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState<AdvisoryDraft | null>(null);
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -186,6 +206,14 @@ export function AdvisoryPage() {
     api.get<AdvisoryCapabilities>("/api/advisory/capabilities")
       .then((response) => setCapabilities(response.data))
       .catch(() => message.warning("LLM 运行状态暂时不可用"));
+  }, []);
+
+  useEffect(() => {
+    setLoadingValidations(true);
+    api.get<EligibleValidationOption[]>("/api/advisory/eligible-validations")
+      .then((response) => setEligibleValidations(response.data))
+      .catch(() => setValidationLoadError("Failed to load eligible OOS validation records."))
+      .finally(() => setLoadingValidations(false));
   }, []);
 
   const targetWeightRows = useMemo(
@@ -211,6 +239,8 @@ export function AdvisoryPage() {
       const response = await api.post<AdvisoryDraft>("/api/advisory/drafts", {
         strategy_name: values.strategy_name,
         as_of_date: values.as_of_date.format("YYYY-MM-DD"),
+        validation_id: selectedValidation?.id,
+        strategy_parameters: selectedValidation?.strategy_parameters ?? {},
         symbols,
         cash: values.cash,
         positions: (values.positions ?? [])
@@ -328,15 +358,47 @@ export function AdvisoryPage() {
           layout="vertical"
           onFinish={createDraft}
         >
+          {validationLoadError && (
+            <Alert message={validationLoadError} showIcon type="error" style={{ marginBottom: 16 }} />
+          )}
+          {!loadingValidations && !validationLoadError && eligibleValidations.length === 0 && (
+            <Alert
+              message="No eligible OOS validation is available. This draft will not include validated historical evidence."
+              showIcon
+              type="warning"
+              style={{ marginBottom: 16 }}
+            />
+          )}
+          <Form.Item label="OOS validation (optional)" name="validation_id">
+            <Select
+              allowClear
+              loading={loadingValidations}
+              onChange={(validationId) => {
+                const option = eligibleValidations.find((item) => item.id === validationId) ?? null;
+                setSelectedValidation(option);
+                if (option) {
+                  form.setFieldsValue({
+                    strategy_name: option.strategy_name,
+                    as_of_date: dayjs(option.as_of_date),
+                  });
+                }
+              }}
+              options={eligibleValidations.map((item) => ({
+                value: item.id,
+                label: `#${item.id} | ${item.strategy_name} | ${item.as_of_date} | OOS excess ${((item.aggregate.excess_return ?? 0) * 100).toFixed(2)}%`,
+              }))}
+              placeholder="Attach an eligible OOS validation"
+            />
+          </Form.Item>
           <Row gutter={16}>
             <Col xs={24} md={8}>
               <Form.Item label="策略" name="strategy_name" rules={[{ required: true, message: "请选择策略" }]}>
-                <Select options={strategies.map((strategy) => ({ label: strategy.display_name, value: strategy.name }))} />
+                <Select disabled={Boolean(selectedValidation)} options={strategies.map((strategy) => ({ label: strategy.display_name, value: strategy.name }))} />
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
               <Form.Item label="决策日" name="as_of_date" rules={[{ required: true, message: "请选择决策日" }]}>
-                <DatePicker style={{ width: "100%" }} />
+                <DatePicker disabled={Boolean(selectedValidation)} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
@@ -414,6 +476,11 @@ export function AdvisoryPage() {
           <Card className="panel" title="草案概览" extra={<Tag color={draft.status === "draft" ? "blue" : "default"}>{draft.status}</Tag>}>
             <Descriptions column={{ xs: 1, sm: 2, lg: 4 }} size="small">
               <Descriptions.Item label="草案编号">#{draft.id}</Descriptions.Item>
+              <Descriptions.Item label="OOS validation">
+                {draft.validation_evidence
+                  ? `#${draft.validation_evidence.validation_id} | excess ${((draft.validation_evidence.aggregate.excess_return ?? 0) * 100).toFixed(2)}%`
+                  : "Not attached"}
+              </Descriptions.Item>
               <Descriptions.Item label="决策日">{draft.as_of_date}</Descriptions.Item>
               <Descriptions.Item label="最早人工执行日">{draft.earliest_execution_date || "数据不足"}</Descriptions.Item>
               <Descriptions.Item label="账户估值">{formatAmount(draft.total_equity)}</Descriptions.Item>

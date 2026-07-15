@@ -14,6 +14,8 @@ from app.main import create_app
 from app.models.entities import (
     AdvisoryNotificationDelivery,
     AdvisoryRun,
+    BacktestRun,
+    BacktestWalkForwardValidation,
     Base,
     DailyBar,
     IndexDailyBar,
@@ -126,6 +128,60 @@ def _seed_news(
         session.close()
 
 
+def _seed_walk_forward_validation(
+    session_factory: sessionmaker,
+    *,
+    as_of_date: date,
+    eligibility_status: str = "eligible",
+    strategy_name: str = "moving_average",
+    strategy_parameters: dict | None = None,
+    backtest_end_date: date | None = None,
+) -> int:
+    session = session_factory()
+    try:
+        run = BacktestRun(
+            strategy_name=strategy_name,
+            start_date=as_of_date - timedelta(days=180),
+            end_date=backtest_end_date or as_of_date,
+            initial_cash=100_000,
+            final_equity=110_000,
+            total_return=0.1,
+            annual_return=0.1,
+            max_drawdown=-0.1,
+            sharpe=1.0,
+        )
+        session.add(run)
+        session.flush()
+        validation = BacktestWalkForwardValidation(
+            backtest_run_id=run.id,
+            status="completed",
+            eligibility_status=eligibility_status,
+            spec_json=json.dumps(
+                {
+                    "strategy_name": strategy_name,
+                    "strategy_parameters": strategy_parameters or {"fast_window": 5, "slow_window": 20},
+                    "windows": [{"oos_end_date": as_of_date.isoformat()}],
+                },
+                sort_keys=True,
+            ),
+            result_json=json.dumps(
+                {
+                    "aggregate": {"excess_return": 0.02},
+                    "cost_stress_aggregate": {"excess_return": 0.01},
+                },
+                sort_keys=True,
+            ),
+            quality_json=json.dumps({"oos_trading_days": 126}, sort_keys=True),
+            source_provenance_fingerprint="source-test",
+            fingerprint=f"validation-{run.id}",
+        )
+        session.add(validation)
+        session.commit()
+        return validation.id
+    finally:
+        session.close()
+
+
 def test_advisory_capabilities_are_safe_by_default():
     response = _client(_session_factory()).get("/api/advisory/capabilities")
 
@@ -166,6 +222,104 @@ def test_advisory_draft_runs_strategy_risk_and_round_lot_plan():
         assert "accepted" in record.risk_json
     finally:
         session.close()
+
+
+def test_advisory_attaches_matching_eligible_walk_forward_validation():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    validation_id = _seed_walk_forward_validation(
+        session_factory,
+        as_of_date=as_of_date,
+        backtest_end_date=as_of_date + timedelta(days=1),
+    )
+
+    response = _client(session_factory).post(
+        "/api/advisory/drafts",
+        json={
+            "strategy_name": "moving_average",
+            "as_of_date": as_of_date.isoformat(),
+            "symbols": ["000001"],
+            "cash": 100_000,
+            "strategy_parameters": {"fast_window": 5, "slow_window": 20},
+            "validation_id": validation_id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["validation_evidence"]["validation_id"] == validation_id
+    options = _client(session_factory).get(
+        "/api/advisory/eligible-validations",
+        params={"as_of_date": as_of_date.isoformat()},
+    )
+    assert options.status_code == 200
+    assert options.json()[0]["id"] == validation_id
+    assert options.json()[0]["as_of_date"] == as_of_date.isoformat()
+    session = session_factory()
+    try:
+        record = session.get(AdvisoryRun, body["id"])
+        assert json.loads(record.risk_json)["evidence"]["validation"]["validation_id"] == validation_id
+    finally:
+        session.close()
+
+
+def test_advisory_rejects_validation_with_parameter_or_as_of_mismatch():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    validation_id = _seed_walk_forward_validation(session_factory, as_of_date=as_of_date)
+    client = _client(session_factory)
+    base_payload = {
+        "strategy_name": "moving_average",
+        "as_of_date": as_of_date.isoformat(),
+        "symbols": ["000001"],
+        "cash": 100_000,
+        "validation_id": validation_id,
+    }
+
+    parameter_mismatch = client.post(
+        "/api/advisory/drafts",
+        json={**base_payload, "strategy_parameters": {"fast_window": 6, "slow_window": 20}},
+    )
+    assert parameter_mismatch.status_code == 400
+    assert "different strategy parameters" in parameter_mismatch.json()["detail"]
+    as_of_mismatch = client.post(
+        "/api/advisory/drafts",
+        json={
+            **base_payload,
+            "as_of_date": (as_of_date - timedelta(days=1)).isoformat(),
+            "strategy_parameters": {"fast_window": 5, "slow_window": 20},
+        },
+    )
+    assert as_of_mismatch.status_code == 400
+    assert "as-of date" in as_of_mismatch.json()["detail"]
+
+
+def test_advisory_rejects_ineligible_walk_forward_validation():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    validation_id = _seed_walk_forward_validation(
+        session_factory,
+        as_of_date=as_of_date,
+        eligibility_status="not_eligible_pit_degraded",
+    )
+
+    response = _client(session_factory).post(
+        "/api/advisory/drafts",
+        json={
+            "strategy_name": "moving_average",
+            "as_of_date": as_of_date.isoformat(),
+            "symbols": ["000001"],
+            "cash": 100_000,
+            "strategy_parameters": {"fast_window": 5, "slow_window": 20},
+            "validation_id": validation_id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "not eligible" in response.json()["detail"]
 
 
 def test_advisory_retains_deterministic_draft_when_remote_llm_is_not_enabled():

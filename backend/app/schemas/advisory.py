@@ -20,6 +20,7 @@ class AdvisoryRequest(BaseModel):
     max_symbol_weight: float = Field(default=0.1, ge=0.0, le=1.0)
     max_total_weight: float = Field(default=0.8, ge=0.0, le=1.0)
     max_positions: int | None = Field(default=20, ge=1, le=500)
+    validation_id: int | None = Field(default=None, ge=1)
     allow_remote_llm: bool = False
 
 
@@ -91,6 +92,26 @@ class FactorEvidenceOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ValidationEvidenceOut(BaseModel):
+    validation_id: int
+    backtest_run_id: int
+    source_as_of_date: date
+    fingerprint: str
+    aggregate: dict[str, float] = Field(default_factory=dict)
+    cost_stress_aggregate: dict[str, float] = Field(default_factory=dict)
+    quality: dict[str, Any] = Field(default_factory=dict)
+
+
+class EligibleValidationOptionOut(BaseModel):
+    id: int
+    backtest_run_id: int
+    strategy_name: str
+    as_of_date: date
+    strategy_parameters: dict[str, Any] = Field(default_factory=dict)
+    aggregate: dict[str, float] = Field(default_factory=dict)
+    cost_stress_aggregate: dict[str, float] = Field(default_factory=dict)
+
+
 class AdvisoryResponse(BaseModel):
     id: int
     status: Literal["draft", "llm_disabled", "failed"]
@@ -106,6 +127,7 @@ class AdvisoryResponse(BaseModel):
     market_evidence: MarketEvidenceOut
     news_evidence: NewsEvidenceOut
     factor_evidence: FactorEvidenceOut
+    validation_evidence: ValidationEvidenceOut | None = None
     warnings: list[str] = Field(default_factory=list)
     remote_llm_enabled: bool = False
     llm_summary: str | None = None

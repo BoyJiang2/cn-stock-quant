@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -19,13 +19,14 @@ from app.ai_advisory.service import (
 )
 from app.core.config import settings
 from app.core.database import SessionLocal, get_session
-from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun
+from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestWalkForwardValidation
 from app.notifications import NotificationDeliveryError, WeComGroupWebhookSender
 from app.schemas.advisory import (
     AdvisoryNotificationResponse,
     AdvisoryRequest,
     AdvisoryResponse,
     AdvisoryReviewResponse,
+    EligibleValidationOptionOut,
 )
 
 router = APIRouter()
@@ -43,6 +44,51 @@ def capabilities() -> dict:
         "wecom_outbound_configured": settings.wecom_webhook_configured,
         "requires_human_confirmation": True,
     }
+
+
+@router.get("/eligible-validations", response_model=list[EligibleValidationOptionOut])
+def list_eligible_validations(
+    strategy_name: str | None = None,
+    as_of_date: date | None = None,
+    session: Session = Depends(get_session),
+) -> list[EligibleValidationOptionOut]:
+    stmt = (
+        select(BacktestWalkForwardValidation, BacktestRun)
+        .join(BacktestRun, BacktestRun.id == BacktestWalkForwardValidation.backtest_run_id)
+        .where(BacktestWalkForwardValidation.eligibility_status == "eligible")
+        .order_by(BacktestWalkForwardValidation.created_at.desc())
+        .limit(100)
+    )
+    options: list[EligibleValidationOptionOut] = []
+    for validation, run in session.execute(stmt):
+        spec = json.loads(validation.spec_json)
+        validation_strategy_name = spec.get("strategy_name")
+        if validation_strategy_name != run.strategy_name:
+            continue
+        if strategy_name and validation_strategy_name != strategy_name:
+            continue
+        windows = spec.get("windows")
+        if not isinstance(windows, list) or not windows:
+            continue
+        try:
+            validation_as_of_date = date.fromisoformat(str(windows[-1]["oos_end_date"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if as_of_date and validation_as_of_date != as_of_date:
+            continue
+        result = json.loads(validation.result_json)
+        options.append(
+            EligibleValidationOptionOut(
+                id=validation.id,
+                backtest_run_id=run.id,
+                strategy_name=validation_strategy_name,
+                as_of_date=validation_as_of_date,
+                strategy_parameters=spec.get("strategy_parameters", {}),
+                aggregate=result.get("aggregate", {}),
+                cost_stress_aggregate=result.get("cost_stress_aggregate", {}),
+            )
+        )
+    return options
 
 
 @router.post("/drafts", response_model=AdvisoryResponse)

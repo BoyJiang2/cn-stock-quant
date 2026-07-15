@@ -12,7 +12,7 @@ from app.ai_advisory.providers import TextStreamingProvider
 from app.ai_research.market_regime import MarketRegimeAnalyzer
 from app.data.repository import MarketDataRepository
 from app.factors import FACTOR_DIRECTIONS, FactorLab, FactorSpec
-from app.models.entities import AdvisoryRun
+from app.models.entities import AdvisoryRun, BacktestRun, BacktestWalkForwardValidation
 from app.portfolio.trade_plan import build_trade_plan
 from app.risk.rules import RiskConfig, RiskEngine
 from app.schemas.advisory import (
@@ -25,6 +25,7 @@ from app.schemas.advisory import (
     MarketEvidenceOut,
     NewsEvidenceItemOut,
     NewsEvidenceOut,
+    ValidationEvidenceOut,
 )
 from app.strategy.base import StrategyContext
 from app.strategy.registry import get_strategy
@@ -41,6 +42,7 @@ def create_advisory(
     remote_llm_available: bool,
 ) -> AdvisoryResponse:
     repository = MarketDataRepository(session)
+    validation_evidence = _validation_evidence(session, payload)
     positions = _resolve_positions(repository, payload)
     try:
         symbols = repository.resolve_symbols(
@@ -123,6 +125,10 @@ def create_advisory(
         "Signals are generated after the close and require manual review before the next trading session.",
         "Trade-plan estimates do not reserve cash for commission, taxes, T+1, limit rules, or intraday liquidity.",
     ]
+    if validation_evidence is not None:
+        warnings.append(
+            f"Eligible rolling OOS validation #{validation_evidence.validation_id} is attached as historical evidence, not a future-return guarantee."
+        )
     if earliest_execution_date is None:
         warnings.append("No next trading date is available in the local calendar.")
     if payload.allow_remote_llm and not remote_llm_available:
@@ -147,6 +153,7 @@ def create_advisory(
                     "market": market_evidence.model_dump(mode="json"),
                     "news": news_evidence.model_dump(mode="json"),
                     "factors": factor_evidence.model_dump(mode="json"),
+                    "validation": validation_evidence.model_dump(mode="json") if validation_evidence else None,
                 },
             },
             ensure_ascii=True,
@@ -177,10 +184,57 @@ def create_advisory(
         market_evidence=market_evidence,
         news_evidence=news_evidence,
         factor_evidence=factor_evidence,
+        validation_evidence=validation_evidence,
         warnings=warnings,
         remote_llm_enabled=payload.allow_remote_llm and remote_llm_available,
         llm_summary=None,
     )
+
+
+def _validation_evidence(session: Session, payload: AdvisoryRequest) -> ValidationEvidenceOut | None:
+    if payload.validation_id is None:
+        return None
+    validation = session.get(BacktestWalkForwardValidation, payload.validation_id)
+    if validation is None:
+        raise AdvisoryInputError("Selected rolling OOS validation was not found.")
+    if validation.status != "completed" or validation.eligibility_status != "eligible":
+        raise AdvisoryInputError("Selected rolling OOS validation is not eligible evidence.")
+    run = session.get(BacktestRun, validation.backtest_run_id)
+    if run is None:
+        raise AdvisoryInputError("Selected rolling OOS validation has no source backtest.")
+    spec = json.loads(validation.spec_json)
+    if spec.get("strategy_name") != payload.strategy_name:
+        raise AdvisoryInputError("Selected rolling OOS validation uses a different strategy.")
+    if _canonical_json(spec.get("strategy_parameters", {})) != _canonical_json(payload.strategy_parameters):
+        raise AdvisoryInputError("Selected rolling OOS validation uses different strategy parameters.")
+    source_as_of_date = _validation_as_of_date(spec)
+    if source_as_of_date != payload.as_of_date:
+        raise AdvisoryInputError("Selected rolling OOS validation does not match the advisory as-of date.")
+    result = json.loads(validation.result_json)
+    return ValidationEvidenceOut(
+        validation_id=validation.id,
+        backtest_run_id=validation.backtest_run_id,
+        source_as_of_date=source_as_of_date,
+        fingerprint=validation.fingerprint,
+        aggregate=result.get("aggregate", {}),
+        cost_stress_aggregate=result.get("cost_stress_aggregate", {}),
+        quality=json.loads(validation.quality_json),
+    )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _validation_as_of_date(spec: dict) -> date:
+    windows = spec.get("windows")
+    if not isinstance(windows, list) or not windows:
+        raise AdvisoryInputError("Selected rolling OOS validation has no completed OOS windows.")
+    final_window = windows[-1]
+    try:
+        return date.fromisoformat(str(final_window["oos_end_date"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AdvisoryInputError("Selected rolling OOS validation has an invalid OOS cutoff date.") from exc
 
 
 def stream_advisory_summary(
@@ -539,6 +593,7 @@ def _request_json(
             "positions": positions,
             "strategy_name": payload.strategy_name,
             "strategy_parameters": payload.strategy_parameters,
+            "validation_id": payload.validation_id,
             "symbols": symbols,
         },
         ensure_ascii=True,
