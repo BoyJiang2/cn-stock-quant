@@ -1,4 +1,6 @@
+import hashlib
 import json
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from statistics import fmean
 
@@ -401,45 +403,24 @@ def run_walk_forward_validation(
         raise HTTPException(status_code=409, detail="The provenance record has no selected symbols.")
 
     repository = MarketDataRepository(session)
-    bars = repository.daily_bars(selected_symbols, source_request.start_date, source_request.end_date)
-    if bars.empty:
-        raise HTTPException(status_code=409, detail="Local bars for this recorded backtest are no longer available.")
-    bars = bars.copy()
-    bars["trade_date"] = pd.to_datetime(bars["trade_date"]).dt.date
-    trading_dates = sorted(bars["trade_date"].unique())
+    is_pit_source = source_request.symbol_source == "research_pool" and source_request.point_in_time
+    if is_pit_source:
+        trading_dates = repository.trading_dates(source_request.start_date, source_request.end_date)
+    else:
+        bars = repository.daily_bars(selected_symbols, source_request.start_date, source_request.end_date)
+        if bars.empty:
+            raise HTTPException(status_code=409, detail="Local bars for this recorded backtest are no longer available.")
+        bars = bars.copy()
+        bars["trade_date"] = pd.to_datetime(bars["trade_date"]).dt.date
+        trading_dates = sorted(bars["trade_date"].unique())
     windows = rolling_oos_windows(
         trading_dates,
         warmup_trading_days=payload.warmup_trading_days,
         oos_window_trading_days=payload.oos_window_trading_days,
     )
 
-    benchmark_bars = None
-    benchmark_complete = False
-    if source_request.benchmark_symbol:
-        benchmark_bars = repository.index_daily_bars(
-            source_request.benchmark_symbol,
-            source_request.start_date,
-            source_request.end_date,
-        )
-        benchmark_dates = (
-            set(pd.to_datetime(benchmark_bars["trade_date"]).dt.date)
-            if not benchmark_bars.empty
-            else set()
-        )
-        benchmark_complete = all(
-            window.start_date in benchmark_dates and window.end_date in benchmark_dates
-            for window in windows
-        )
-
     strategy = get_strategy(source_request.strategy_name)
     strategy_params = source_request.strategy_parameters()
-    news_history = _load_negative_news_history(
-        repository,
-        selected_symbols,
-        start_date=source_request.start_date,
-        end_date=source_request.end_date,
-        params=strategy_params,
-    )
     base_config = BacktestConfig(
         start_date=source_request.start_date,
         end_date=source_request.end_date,
@@ -452,44 +433,187 @@ def run_walk_forward_validation(
         risk_max_total_weight=source_request.risk_max_total_weight,
         risk_max_positions=source_request.risk_max_positions,
         params=strategy_params,
-        news_history=news_history,
     )
+    window_results: list[dict]
+    stressed_results: list[dict]
+    benchmark_complete = False
+    dynamic_quality_flags: list[str] = []
+    window_specs: list[dict] = []
     try:
-        window_results = run_walk_forward(
-            strategy,
-            bars,
-            base_config,
-            windows,
-            benchmark_bars=benchmark_bars,
-        )
-        stressed_results = run_walk_forward(
-            strategy,
-            bars,
-            BacktestConfig(
-                **{
-                    **base_config.__dict__,
-                    "commission_rate": base_config.commission_rate * payload.cost_stress_multiplier,
-                    "stamp_tax_rate": base_config.stamp_tax_rate * payload.cost_stress_multiplier,
-                    "slippage_rate": base_config.slippage_rate * payload.cost_stress_multiplier,
+        if is_pit_source:
+            pit_repository = PitRepository(session, bar_reader=repository)
+            inputs: list[tuple] = []
+            for window in windows:
+                warmup_start = window.warmup_start_date or window.start_date
+                pit_result = pit_repository.select_research_symbols_pit(
+                    window.start_date,
+                    warmup_start,
+                    window.start_date,
+                    index_symbol=source_request.pit_index_symbol,
+                    st_policy=source_request.pit_st_policy,
+                    limit=source_request.pool_max_symbols,
+                )
+                universe_snapshot = {**pit_result.meta, "symbols": pit_result.symbols}
+                universe_snapshot["symbols_fingerprint"] = _validation_input_fingerprint(
+                    pit_result.symbols
+                )
+                window_spec = {
+                    "name": window.name,
+                    "warmup_start_date": warmup_start,
+                    "oos_start_date": window.start_date,
+                    "oos_end_date": window.end_date,
+                    "universe": universe_snapshot,
                 }
-            ),
-            windows,
-            benchmark_bars=benchmark_bars,
-        )
+                window_specs.append(window_spec)
+                if pit_result.meta.get("pit_degraded", True):
+                    dynamic_quality_flags.append(f"{window.name}: point-in-time universe metadata is degraded")
+                if not pit_result.symbols:
+                    dynamic_quality_flags.append(f"{window.name}: no eligible point-in-time symbols")
+                    continue
+                window_bars = repository.daily_bars(pit_result.symbols, warmup_start, window.end_date)
+                if window_bars.empty:
+                    dynamic_quality_flags.append(
+                        f"{window.name}: point-in-time selected universe has no local bars"
+                    )
+                    continue
+                window_spec["bars_fingerprint"] = _validation_input_fingerprint(
+                    window_bars.to_dict("records")
+                )
+                window_benchmark = None
+                window_benchmark_complete = False
+                if source_request.benchmark_symbol:
+                    window_benchmark = repository.index_daily_bars(
+                        source_request.benchmark_symbol,
+                        warmup_start,
+                        window.end_date,
+                    )
+                    benchmark_dates = (
+                        set(pd.to_datetime(window_benchmark["trade_date"]).dt.date)
+                        if not window_benchmark.empty
+                        else set()
+                    )
+                    oos_dates = {day for day in trading_dates if window.start_date <= day <= window.end_date}
+                    window_benchmark_complete = bool(oos_dates) and oos_dates.issubset(benchmark_dates)
+                    if not window_benchmark_complete:
+                        dynamic_quality_flags.append(f"{window.name}: local benchmark does not cover every OOS trading day")
+                window_spec["benchmark_complete"] = window_benchmark_complete
+                window_spec["benchmark_fingerprint"] = _validation_input_fingerprint(
+                    window_benchmark.to_dict("records") if window_benchmark is not None else []
+                )
+                news_history = _load_negative_news_history(
+                    repository,
+                    pit_result.symbols,
+                    start_date=warmup_start,
+                    end_date=window.end_date,
+                    params=strategy_params,
+                )
+                window_spec["news_fingerprint"] = _validation_input_fingerprint(
+                    news_history.to_dict("records") if news_history is not None else []
+                )
+                inputs.append(
+                    (
+                        window,
+                        universe_snapshot,
+                        window_bars,
+                        window_benchmark,
+                        news_history,
+                    )
+                )
+
+            window_results = []
+            stressed_results = []
+            for window, universe_snapshot, window_bars, window_benchmark, news_history in inputs:
+                window_config = replace(base_config, news_history=news_history)
+                normal = run_walk_forward(
+                    strategy,
+                    window_bars,
+                    window_config,
+                    [window],
+                    benchmark_bars=window_benchmark,
+                )[0]
+                stressed = run_walk_forward(
+                    strategy,
+                    window_bars,
+                    replace(
+                        window_config,
+                        commission_rate=window_config.commission_rate * payload.cost_stress_multiplier,
+                        stamp_tax_rate=window_config.stamp_tax_rate * payload.cost_stress_multiplier,
+                        slippage_rate=window_config.slippage_rate * payload.cost_stress_multiplier,
+                    ),
+                    [window],
+                    benchmark_bars=window_benchmark,
+                )[0]
+                normal["universe"] = universe_snapshot
+                stressed["universe"] = universe_snapshot
+                window_results.append(normal)
+                stressed_results.append(stressed)
+            benchmark_complete = bool(windows) and not any(
+                "local benchmark" in flag for flag in dynamic_quality_flags
+            )
+        else:
+            benchmark_bars = None
+            if source_request.benchmark_symbol:
+                benchmark_bars = repository.index_daily_bars(
+                    source_request.benchmark_symbol,
+                    source_request.start_date,
+                    source_request.end_date,
+                )
+                benchmark_dates = (
+                    set(pd.to_datetime(benchmark_bars["trade_date"]).dt.date)
+                    if not benchmark_bars.empty
+                    else set()
+                )
+                benchmark_complete = all(
+                    window.start_date in benchmark_dates and window.end_date in benchmark_dates
+                    for window in windows
+                )
+            news_history = _load_negative_news_history(
+                repository,
+                selected_symbols,
+                start_date=source_request.start_date,
+                end_date=source_request.end_date,
+                params=strategy_params,
+            )
+            fixed_config = replace(base_config, news_history=news_history)
+            window_results = run_walk_forward(
+                strategy,
+                bars,
+                fixed_config,
+                windows,
+                benchmark_bars=benchmark_bars,
+            )
+            stressed_results = run_walk_forward(
+                strategy,
+                bars,
+                replace(
+                    fixed_config,
+                    commission_rate=fixed_config.commission_rate * payload.cost_stress_multiplier,
+                    stamp_tax_rate=fixed_config.stamp_tax_rate * payload.cost_stress_multiplier,
+                    slippage_rate=fixed_config.slippage_rate * payload.cost_stress_multiplier,
+                ),
+                windows,
+                benchmark_bars=benchmark_bars,
+            )
+            window_specs = [
+                {
+                    "name": window.name,
+                    "warmup_start_date": window.warmup_start_date,
+                    "oos_start_date": window.start_date,
+                    "oos_end_date": window.end_date,
+                }
+                for window in windows
+            ]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    universe = json.loads(provenance.universe_json)
-    total_oos_trading_days = len(windows) * payload.oos_window_trading_days
-    quality_flags: list[str] = []
-    if source_request.symbol_source != "research_pool" or not source_request.point_in_time:
+    total_oos_trading_days = sum(
+        1 for day in trading_dates for window in windows if window.start_date <= day <= window.end_date
+    )
+    quality_flags: list[str] = list(dynamic_quality_flags)
+    if not is_pit_source:
         quality_flags.append("source backtest was not built from a point-in-time research universe")
-    if universe.get("mode") != "pit_initial_universe" or universe.get("pit_degraded", True):
-        quality_flags.append("point-in-time universe metadata is degraded or unavailable")
-    if universe.get("warmup_degraded", False):
-        quality_flags.append("source PIT universe used a degraded warm-up fallback")
-    if universe.get("mode") == "pit_initial_universe":
-        quality_flags.append("PIT universe is fixed at the backtest start and is not rebuilt for each OOS window")
+    if is_pit_source and not trading_dates:
+        quality_flags.append("local trading calendar has no dates for the recorded backtest range")
     if not source_request.benchmark_symbol or not benchmark_complete:
         quality_flags.append("local benchmark does not cover every OOS window boundary")
     if len(windows) < payload.minimum_windows:
@@ -497,9 +621,7 @@ def run_walk_forward_validation(
     if total_oos_trading_days < 126:
         quality_flags.append("fewer than 126 OOS trading days were available")
 
-    if any("fixed at the backtest start" in flag for flag in quality_flags):
-        eligibility_status = "not_eligible_static_pit_universe"
-    elif any("point-in-time" in flag for flag in quality_flags):
+    if any("point-in-time" in flag or "trading calendar" in flag for flag in quality_flags):
         eligibility_status = "not_eligible_pit_degraded"
     elif any("benchmark" in flag for flag in quality_flags):
         eligibility_status = "not_eligible_benchmark_missing"
@@ -516,15 +638,7 @@ def run_walk_forward_validation(
         "selected_symbols": selected_symbols,
         "benchmark_symbol": source_request.benchmark_symbol,
         "window_protocol": payload.model_dump(mode="json"),
-        "windows": [
-            {
-                "name": window.name,
-                "warmup_start_date": window.warmup_start_date,
-                "oos_start_date": window.start_date,
-                "oos_end_date": window.end_date,
-            }
-            for window in windows
-        ],
+        "windows": window_specs,
     }
     result = {
         "window_results": window_results,
@@ -599,6 +713,12 @@ def _aggregate_validation_metrics(results: list[dict]) -> dict[str, float]:
         name: round(fmean(float(item["metrics"].get(name, 0.0)) for item in results), 6)
         for name in metric_names
     } if results else {}
+
+
+def _validation_input_fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _walk_forward_validation_out(validation) -> WalkForwardValidationOut:

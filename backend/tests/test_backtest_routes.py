@@ -18,8 +18,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import BacktestRun, BacktestRunProvenance, Base, DailyBar, IndexDailyBar, NewsItem, Stock
-from app.models.pit import SecurityStatus
+from app.models.entities import BacktestRun, BacktestRunProvenance, Base, DailyBar, IndexDailyBar, NewsItem, Stock, TradingCalendar
+from app.models.pit import IndexConstituent, SecurityName, SecuritySTStatus, SecurityStatus
 from app.schemas.backtest import BacktestRequest
 
 
@@ -113,6 +113,56 @@ def _seed_index_bars(
                 )
             )
             current += timedelta(days=1)
+        session.commit()
+    finally:
+        session.close()
+
+
+def _seed_open_calendar(session_factory: sessionmaker, start_date: date, end_date: date) -> None:
+    session = session_factory()
+    try:
+        current = start_date
+        while current <= end_date:
+            session.merge(TradingCalendar(trade_date=current, is_open=True))
+            current += timedelta(days=1)
+        session.commit()
+    finally:
+        session.close()
+
+
+def _seed_pit_security_history(session_factory: sessionmaker, symbol: str, name: str) -> None:
+    session = session_factory()
+    try:
+        session.add_all(
+            [
+                SecurityStatus(
+                    symbol=symbol,
+                    status="listed",
+                    valid_from=date(2020, 1, 1),
+                    valid_to=None,
+                    announced_at=date(2020, 1, 1),
+                    source="test",
+                    confidence="high",
+                ),
+                SecurityName(
+                    symbol=symbol,
+                    name=name,
+                    valid_from=date(2020, 1, 1),
+                    valid_to=None,
+                    announced_at=date(2020, 1, 1),
+                    source="test",
+                ),
+                SecuritySTStatus(
+                    symbol=symbol,
+                    st_status="normal",
+                    valid_from=date(2020, 1, 1),
+                    valid_to=None,
+                    announced_at=date(2020, 1, 1),
+                    source="test",
+                    confidence="high",
+                ),
+            ]
+        )
         session.commit()
     finally:
         session.close()
@@ -264,7 +314,7 @@ def test_walk_forward_validation_records_non_pit_run_without_promoting_it():
     assert history.json()[0]["id"] == body["id"]
 
 
-def test_walk_forward_validation_does_not_promote_a_static_pit_universe():
+def test_walk_forward_validation_requires_a_local_calendar_for_pit_windows():
     session_factory = _make_session_factory()
     _seed_stock(session_factory, "000001", "Ping An Bank", "SZ")
     _seed_daily_bars(session_factory, "000001", date(2024, 1, 1), date(2024, 6, 30))
@@ -305,8 +355,88 @@ def test_walk_forward_validation_does_not_promote_a_static_pit_universe():
     )
 
     assert validation.status_code == 200, validation.text
-    assert validation.json()["eligibility_status"] == "not_eligible_static_pit_universe"
-    assert validation.json()["quality"]["oos_trading_days"] >= 126
+    body = validation.json()
+    assert body["eligibility_status"] == "not_eligible_pit_degraded"
+    assert "local trading calendar" in " ".join(body["quality"]["quality_flags"])
+
+
+def test_walk_forward_validation_rebuilds_pit_universe_for_each_oos_window():
+    session_factory = _make_session_factory()
+    start_date = date(2024, 1, 1)
+    end_date = date(2024, 6, 30)
+    for symbol, name in (("000001", "Alpha"), ("000002", "Beta"), ("000003", "Gamma")):
+        _seed_stock(session_factory, symbol, name, "SZ")
+        _seed_daily_bars(session_factory, symbol, start_date, end_date)
+        _seed_pit_security_history(session_factory, symbol, name)
+    _seed_open_calendar(session_factory, start_date, end_date)
+    _seed_index_bars(session_factory, "000300", start_date, end_date)
+    session = session_factory()
+    try:
+        session.add_all(
+            [
+                IndexConstituent(
+                    index_symbol="000300",
+                    symbol="000001",
+                    valid_from=date(2020, 1, 1),
+                    valid_to=None,
+                    announced_at=date(2020, 1, 1),
+                    source="test",
+                ),
+                IndexConstituent(
+                    index_symbol="000300",
+                    symbol="000002",
+                    valid_from=date(2020, 1, 1),
+                    valid_to=date(2024, 3, 15),
+                    announced_at=date(2020, 1, 1),
+                    source="test",
+                ),
+                IndexConstituent(
+                    index_symbol="000300",
+                    symbol="000003",
+                    valid_from=date(2024, 3, 15),
+                    valid_to=None,
+                    announced_at=date(2024, 3, 15),
+                    source="test",
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session.close()
+    client = _client_with(session_factory)
+    run = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_name": "moving_average",
+            "symbol_source": "research_pool",
+            "point_in_time": True,
+            "pit_index_symbol": "000300",
+            "pool_max_symbols": 3,
+            "benchmark_symbol": "000300",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "fast_window": 5,
+            "slow_window": 20,
+        },
+    )
+    assert run.status_code == 200, run.text
+
+    validation = client.post(
+        f"/api/backtests/{run.json()['run_id']}/walk-forward-validations",
+        json={"warmup_trading_days": 20, "oos_window_trading_days": 21, "minimum_windows": 2},
+    )
+
+    assert validation.status_code == 200, validation.text
+    body = validation.json()
+    assert body["eligibility_status"] == "eligible"
+    windows = body["spec"]["windows"]
+    early = next(item for item in windows if item["oos_start_date"] < "2024-03-15")
+    late = next(item for item in windows if item["oos_start_date"] >= "2024-03-15")
+    assert early["universe"]["symbols"] == ["000001", "000002"]
+    assert late["universe"]["symbols"] == ["000001", "000003"]
+    assert all(item["universe"]["pit_degraded"] is False for item in windows)
+    assert early["universe"]["symbols_fingerprint"] != late["universe"]["symbols_fingerprint"]
+    assert all(item["bars_fingerprint"] and item["benchmark_fingerprint"] for item in windows)
 
 
 def test_run_backtest_manual_accepts_stock_name():

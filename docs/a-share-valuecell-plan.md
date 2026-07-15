@@ -82,9 +82,12 @@ that is constrained to the already risk-gated trade-plan draft.
 - [x] P1-3b-2b Add fixed-parameter rolling OOS diagnostics with prior-history
   warm-up, independent strategy instances, local benchmark checks, 1x/2x cost
   stress, immutable records, and explicit non-eligibility reasons.
-- [ ] P1-3b-2c Rebuild the PIT universe for every OOS window. Only then may a
-  user-selected eligible record be attached to advisory context after strategy,
-  parameter, and as-of-date matching.
+- [x] P1-3b-2c Rebuild the PIT universe for every OOS window from the local
+  trading calendar. Persist each window's PIT metadata, selected symbols, and
+  market/benchmark/news input fingerprints; only fully covered, non-degraded
+  windows may be eligible evidence.
+- [ ] P1-3b-2d Allow a user-selected eligible OOS record to be attached to
+  advisory context only after strategy, parameter, and as-of-date matching.
 - [x] P1-4 Add an LLM prompt/result contract that constrains it to a
   risk-gated trade-plan explanation and non-binding risk rationale.
 - [x] P1-5 Add streamed report events to the web API.
