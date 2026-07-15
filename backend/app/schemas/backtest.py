@@ -96,3 +96,13 @@ class BacktestRunOut(BaseModel):
     annual_return: float
     max_drawdown: float
     sharpe: float
+
+
+class BacktestRunProvenanceOut(BaseModel):
+    run_id: int
+    status: Literal["recorded_unvalidated", "not_recorded"]
+    fingerprint: str | None = None
+    spec: dict[str, Any] = Field(default_factory=dict)
+    universe: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    warning: str

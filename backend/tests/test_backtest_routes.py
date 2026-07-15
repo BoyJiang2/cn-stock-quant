@@ -17,7 +17,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import Base, DailyBar, IndexDailyBar, NewsItem, Stock
+from app.models.entities import BacktestRun, Base, DailyBar, IndexDailyBar, NewsItem, Stock
 from app.models.pit import SecurityStatus
 from app.schemas.backtest import BacktestRequest
 
@@ -185,6 +185,41 @@ def test_run_backtest_manual_returns_symbol_source_and_selected_symbols():
     assert body["run_id"] is not None
     assert body["metrics"]["final_equity"] > 0
     assert len(body["equity_curve"]) > 0
+    provenance = client.get(f"/api/backtests/{body['run_id']}/provenance")
+    assert provenance.status_code == 200
+    provenance_body = provenance.json()
+    assert provenance_body["status"] == "recorded_unvalidated"
+    assert provenance_body["spec"]["selected_symbols"] == ["000001"]
+    assert provenance_body["universe"] == {"mode": "manual"}
+    assert provenance_body["result"]["final_equity"] == body["metrics"]["final_equity"]
+    assert provenance_body["fingerprint"]
+
+
+def test_legacy_backtest_provenance_is_explicitly_not_recorded():
+    session_factory = _make_session_factory()
+    session = session_factory()
+    try:
+        session.add(
+            BacktestRun(
+                strategy_name="moving_average",
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 2, 1),
+                initial_cash=100_000,
+                final_equity=100_000,
+                total_return=0.0,
+                annual_return=0.0,
+                max_drawdown=0.0,
+                sharpe=0.0,
+            )
+        )
+        session.commit()
+        run_id = session.query(BacktestRun).one().id
+    finally:
+        session.close()
+
+    response = _client_with(session_factory).get(f"/api/backtests/{run_id}/provenance")
+    assert response.status_code == 200
+    assert response.json()["status"] == "not_recorded"
 
 
 def test_run_backtest_manual_accepts_stock_name():

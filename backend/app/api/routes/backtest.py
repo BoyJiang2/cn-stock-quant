@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,6 +9,7 @@ from app.backtest.engine import BacktestConfig, DailyBacktestEngine
 from app.backtest.persistence import (
     get_backtest_equity,
     get_backtest_run,
+    get_backtest_run_provenance,
     get_backtest_trades,
     list_backtest_runs,
     save_backtest_result,
@@ -17,7 +19,7 @@ from app.data.akshare_provider import AkShareProvider
 from app.data.pit_repository import PitRepository
 from app.data.repository import MarketDataRepository
 from app.data.symbols import INDEX_SYMBOL_WHITELIST, normalize_a_share_symbol
-from app.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResponse, BacktestRunOut, EquityPoint, TradeOut
+from app.schemas.backtest import BacktestMetrics, BacktestRequest, BacktestResponse, BacktestRunOut, BacktestRunProvenanceOut, EquityPoint, TradeOut
 from app.strategy.registry import get_strategy
 
 router = APIRouter()
@@ -194,7 +196,13 @@ def run_backtest(payload: BacktestRequest, session: Session = Depends(get_sessio
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    run_id = save_backtest_result(session, payload, result)
+    run_id = save_backtest_result(
+        session,
+        payload,
+        result,
+        selected_symbols=symbols,
+        universe_metadata=universe_metadata,
+    )
     return BacktestResponse(
         run_id=run_id,
         symbol_source=payload.symbol_source,
@@ -354,6 +362,29 @@ def list_runs(limit: int = 50, session: Session = Depends(get_session)):
         )
         for run in runs
     ]
+
+
+@router.get("/{run_id}/provenance", response_model=BacktestRunProvenanceOut)
+def get_run_provenance(run_id: int, session: Session = Depends(get_session)):
+    run = get_backtest_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Backtest run not found.")
+    provenance = get_backtest_run_provenance(session, run_id)
+    if provenance is None:
+        return BacktestRunProvenanceOut(
+            run_id=run_id,
+            status="not_recorded",
+            warning="This legacy backtest has no immutable provenance record and cannot be used as validation evidence.",
+        )
+    return BacktestRunProvenanceOut(
+        run_id=run_id,
+        status="recorded_unvalidated",
+        fingerprint=provenance.fingerprint,
+        spec=json.loads(provenance.spec_json),
+        universe=json.loads(provenance.universe_json),
+        result=json.loads(provenance.result_json),
+        warning="This run is reproducibly recorded but is not walk-forward out-of-sample validation evidence.",
+    )
 
 
 @router.get("/{run_id}", response_model=BacktestResponse)

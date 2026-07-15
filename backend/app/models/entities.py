@@ -99,6 +99,20 @@ class BacktestRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class BacktestRunProvenance(Base):
+    __tablename__ = "backtest_run_provenance"
+    __table_args__ = (UniqueConstraint("run_id", name="uq_backtest_run_provenance_run"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="recorded_unvalidated")
+    spec_json: Mapped[str] = mapped_column(Text, default="{}")
+    universe_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BacktestEquity(Base):
     __tablename__ = "backtest_equity"
 

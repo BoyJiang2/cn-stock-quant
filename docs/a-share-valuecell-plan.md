@@ -76,8 +76,11 @@ that is constrained to the already risk-gated trade-plan draft.
 - [x] P1-3b-1 Add an as-of-date trailing factor snapshot for target/held
   symbols. It persists only observed price/volume transforms and explicitly
   excludes forward returns, IC, and historical-effectiveness claims.
-- [ ] P1-3b-2 Persist validated walk-forward out-of-sample backtest metadata
-  and attach only an explicitly selected, eligible result to advisory context.
+- [x] P1-3b-2a Persist immutable provenance for each new backtest: request,
+  selected symbols, PIT/universe metadata, benchmark metrics, and a content
+  fingerprint. Legacy runs are explicitly marked as not recorded.
+- [ ] P1-3b-2b Add walk-forward out-of-sample validation metadata and attach
+  only an explicitly selected, eligible result to advisory context.
 - [x] P1-4 Add an LLM prompt/result contract that constrains it to a
   risk-gated trade-plan explanation and non-binding risk rationale.
 - [x] P1-5 Add streamed report events to the web API.
