@@ -11,6 +11,7 @@ from app.api.routes import (
     factors,
     health,
     pit,
+    portfolio,
     strategies,
 )
 from app.core.config import PROJECT_ROOT
@@ -34,6 +35,7 @@ def create_app() -> FastAPI:
     app.include_router(factors.router, prefix="/api/factors", tags=["factors"])
     app.include_router(ai_research.router, prefix="/api/ai-research", tags=["ai-research"])
     app.include_router(advisory.router, prefix="/api/advisory", tags=["advisory"])
+    app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
     app.include_router(pit.router, prefix="/api/data/pit", tags=["pit"])
 
     frontend_dist = PROJECT_ROOT / "frontend" / "dist"

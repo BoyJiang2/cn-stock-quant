@@ -176,6 +176,44 @@ class SyncJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PaperPortfolio(Base):
+    __tablename__ = "paper_portfolios"
+    __table_args__ = (UniqueConstraint("name", name="uq_paper_portfolio_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    cash: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    as_of_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PaperPortfolioPosition(Base):
+    __tablename__ = "paper_portfolio_positions"
+    __table_args__ = (UniqueConstraint("portfolio_id", "symbol", name="uq_paper_portfolio_position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    reference_price: Mapped[float] = mapped_column(Float, nullable=False)
+    price_date: Mapped[date] = mapped_column(Date, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PaperPortfolioValuation(Base):
+    __tablename__ = "paper_portfolio_valuations"
+    __table_args__ = (UniqueConstraint("portfolio_id", "as_of_date", name="uq_paper_portfolio_valuation"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(Integer, index=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    cash: Mapped[float] = mapped_column(Float, nullable=False)
+    position_value: Mapped[float] = mapped_column(Float, nullable=False)
+    equity: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class AdvisoryRun(Base):
     __tablename__ = "advisory_runs"
 

@@ -95,7 +95,8 @@ that is constrained to the already risk-gated trade-plan draft.
 
 ### P2: Portfolio Decision Workbench
 
-- [ ] P2-1 Persist paper portfolio cash, positions, and valuation history.
+- [x] P2-1 Persist a default paper portfolio's cash, current positions, and
+  daily research-close valuation history through explicit user snapshots.
 - [ ] P2-2 Add concentration, cash, drawdown, and exposure diagnostics.
 - [ ] P2-3 Show current holdings, risk-gated target weights, and trade-plan
   deltas in a single review screen.

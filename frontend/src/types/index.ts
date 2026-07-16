@@ -213,3 +213,38 @@ export interface BacktestRun {
   max_drawdown: number;
   sharpe: number;
 }
+
+export interface PaperPortfolioPositionInput {
+  symbol: string;
+  quantity: number;
+}
+
+export interface PaperPortfolioSnapshot {
+  as_of_date: string;
+  cash: number;
+  positions: PaperPortfolioPositionInput[];
+}
+
+export interface PaperPortfolioPosition extends PaperPortfolioPositionInput {
+  name: string | null;
+  reference_price: number;
+  price_date: string;
+  market_value: number;
+}
+
+export interface PaperPortfolioState {
+  id: number;
+  name: string;
+  as_of_date: string | null;
+  cash: number;
+  position_value: number;
+  equity: number;
+  positions: PaperPortfolioPosition[];
+}
+
+export interface PaperPortfolioValuation {
+  as_of_date: string;
+  cash: number;
+  position_value: number;
+  equity: number;
+}
