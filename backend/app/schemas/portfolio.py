@@ -38,3 +38,15 @@ class PaperPortfolioStateOut(BaseModel):
     position_value: float
     equity: float
     positions: list[PaperPortfolioPositionOut] = Field(default_factory=list)
+
+
+class PaperPortfolioDiagnosticsOut(BaseModel):
+    as_of_date: date | None = None
+    cash_weight: float
+    gross_exposure: float
+    largest_position_weight: float
+    top_three_weight: float
+    concentration_hhi: float
+    current_drawdown: float
+    max_drawdown: float
+    warnings: list[str] = Field(default_factory=list)

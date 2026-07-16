@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { MetricCard } from "../components/MetricCard";
-import type { PaperPortfolioSnapshot, PaperPortfolioState, PaperPortfolioValuation } from "../types";
+import type { PaperPortfolioDiagnostics, PaperPortfolioSnapshot, PaperPortfolioState, PaperPortfolioValuation } from "../types";
 
 const { Text, Title } = Typography;
 
@@ -21,6 +21,7 @@ const formatAmount = (value: number) => new Intl.NumberFormat("zh-CN", { maximum
 export function PortfolioPage() {
   const [form] = Form.useForm<SnapshotFormValues>();
   const [portfolio, setPortfolio] = useState<PaperPortfolioState | null>(null);
+  const [diagnostics, setDiagnostics] = useState<PaperPortfolioDiagnostics | null>(null);
   const [history, setHistory] = useState<PaperPortfolioValuation[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -28,12 +29,14 @@ export function PortfolioPage() {
   const loadPortfolio = async () => {
     setLoading(true);
     try {
-      const [current, valuationHistory] = await Promise.all([
+      const [current, valuationHistory, diagnosticResult] = await Promise.all([
         api.get<PaperPortfolioState>("/api/portfolio/current"),
-        api.get<PaperPortfolioValuation[]>("/api/portfolio/history")
+        api.get<PaperPortfolioValuation[]>("/api/portfolio/history"),
+        api.get<PaperPortfolioDiagnostics>("/api/portfolio/diagnostics")
       ]);
       setPortfolio(current.data);
       setHistory(valuationHistory.data);
+      setDiagnostics(diagnosticResult.data);
       form.setFieldsValue({
         as_of_date: current.data.as_of_date ? dayjs(current.data.as_of_date) : dayjs().subtract(1, "day"),
         cash: current.data.cash,
@@ -68,7 +71,9 @@ export function PortfolioPage() {
         positions: response.data.positions.map((position) => ({ symbol: position.symbol, quantity: position.quantity }))
       });
       const valuationHistory = await api.get<PaperPortfolioValuation[]>("/api/portfolio/history");
+      const diagnosticResult = await api.get<PaperPortfolioDiagnostics>("/api/portfolio/diagnostics");
       setHistory(valuationHistory.data);
+      setDiagnostics(diagnosticResult.data);
       message.success("Paper portfolio snapshot saved.");
     } catch (error: any) {
       message.error(error.response?.data?.detail || "Failed to save paper portfolio snapshot.");
@@ -129,6 +134,19 @@ export function PortfolioPage() {
         <MetricCard label="可用现金" value={formatAmount(portfolio?.cash ?? 0)} />
         <MetricCard label="持仓数量" value={String(portfolio?.positions.length ?? 0)} />
       </div>
+
+      <Card className="panel" style={{ marginTop: 16 }} title="风险诊断">
+        <Descriptions column={{ xs: 2, md: 4 }} size="small">
+          <Descriptions.Item label="现金比例">{`${((diagnostics?.cash_weight ?? 0) * 100).toFixed(2)}%`}</Descriptions.Item>
+          <Descriptions.Item label="总敞口">{`${((diagnostics?.gross_exposure ?? 0) * 100).toFixed(2)}%`}</Descriptions.Item>
+          <Descriptions.Item label="最大单一持仓">{`${((diagnostics?.largest_position_weight ?? 0) * 100).toFixed(2)}%`}</Descriptions.Item>
+          <Descriptions.Item label="前三持仓">{`${((diagnostics?.top_three_weight ?? 0) * 100).toFixed(2)}%`}</Descriptions.Item>
+          <Descriptions.Item label="当前回撤">{`${((diagnostics?.current_drawdown ?? 0) * 100).toFixed(2)}%`}</Descriptions.Item>
+          <Descriptions.Item label="历史最大回撤">{`${((diagnostics?.max_drawdown ?? 0) * 100).toFixed(2)}%`}</Descriptions.Item>
+          <Descriptions.Item label="集中度 HHI">{(diagnostics?.concentration_hhi ?? 0).toFixed(3)}</Descriptions.Item>
+        </Descriptions>
+        {diagnostics?.warnings.map((warning) => <Alert key={warning} message={warning} showIcon type="warning" style={{ marginTop: 10 }} />)}
+      </Card>
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} lg={15}>

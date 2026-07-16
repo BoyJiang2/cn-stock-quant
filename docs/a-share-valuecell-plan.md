@@ -97,7 +97,8 @@ that is constrained to the already risk-gated trade-plan draft.
 
 - [x] P2-1 Persist a default paper portfolio's cash, current positions, and
   daily research-close valuation history through explicit user snapshots.
-- [ ] P2-2 Add concentration, cash, drawdown, and exposure diagnostics.
+- [x] P2-2 Add concentration, cash, drawdown, and exposure diagnostics from
+  persisted paper-portfolio snapshots and valuation history.
 - [ ] P2-3 Show current holdings, risk-gated target weights, and trade-plan
   deltas in a single review screen.
 - [ ] P2-4 Add explicit `draft`, `reviewed`, `expired`, and `rejected`

@@ -150,3 +150,30 @@ def test_paper_portfolio_replaces_a_same_day_snapshot_instead_of_duplicating_his
     history = client.get("/api/portfolio/history")
     assert len(history.json()) == 1
     assert history.json()[0]["cash"] == 2_000.0
+
+
+def test_paper_portfolio_diagnostics_use_saved_positions_and_valuation_history():
+    session_factory = _session_factory()
+    first_date = date(2026, 7, 14)
+    second_date = date(2026, 7, 15)
+    for symbol, first_close, second_close in (("000001", 10.0, 8.0), ("000002", 10.0, 10.0)):
+        _seed_close(session_factory, symbol, first_date, first_close)
+        _seed_close(session_factory, symbol, second_date, second_close)
+    client = _client(session_factory)
+    assert client.put(
+        "/api/portfolio/snapshot",
+        json={"as_of_date": first_date.isoformat(), "cash": 0, "positions": [{"symbol": "000001", "quantity": 100}, {"symbol": "000002", "quantity": 100}]},
+    ).status_code == 200
+    assert client.put(
+        "/api/portfolio/snapshot",
+        json={"as_of_date": second_date.isoformat(), "cash": 0, "positions": [{"symbol": "000001", "quantity": 100}, {"symbol": "000002", "quantity": 100}]},
+    ).status_code == 200
+
+    diagnostics = client.get("/api/portfolio/diagnostics")
+    assert diagnostics.status_code == 200
+    body = diagnostics.json()
+    assert body["gross_exposure"] == 1.0
+    assert body["largest_position_weight"] == 0.555556
+    assert body["current_drawdown"] == -0.1
+    assert body["max_drawdown"] == -0.1
+    assert any("Largest holding" in warning for warning in body["warnings"])

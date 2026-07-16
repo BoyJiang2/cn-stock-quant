@@ -242,6 +242,18 @@ export interface PaperPortfolioState {
   positions: PaperPortfolioPosition[];
 }
 
+export interface PaperPortfolioDiagnostics {
+  as_of_date: string | null;
+  cash_weight: number;
+  gross_exposure: number;
+  largest_position_weight: number;
+  top_three_weight: number;
+  concentration_hhi: number;
+  current_drawdown: number;
+  max_drawdown: number;
+  warnings: string[];
+}
+
 export interface PaperPortfolioValuation {
   as_of_date: string;
   cash: number;

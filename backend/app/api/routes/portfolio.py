@@ -7,6 +7,7 @@ from app.data.repository import MarketDataRepository
 from app.models.entities import PaperPortfolio, PaperPortfolioPosition, PaperPortfolioValuation, Stock
 from app.schemas.portfolio import (
     PaperPortfolioPositionOut,
+    PaperPortfolioDiagnosticsOut,
     PaperPortfolioSnapshotIn,
     PaperPortfolioStateOut,
     PaperPortfolioValuationOut,
@@ -44,6 +45,59 @@ def portfolio_history(
         )
         for row in reversed(rows)
     ]
+
+
+@router.get("/diagnostics", response_model=PaperPortfolioDiagnosticsOut)
+def portfolio_diagnostics(session: Session = Depends(get_session)) -> PaperPortfolioDiagnosticsOut:
+    portfolio = _default_portfolio(session)
+    state = _state_out(session, portfolio)
+    equity = state.equity
+    weights = sorted(
+        [item.market_value / equity for item in state.positions] if equity > 0 else [],
+        reverse=True,
+    )
+    valuations = list(
+        session.scalars(
+            select(PaperPortfolioValuation)
+            .where(PaperPortfolioValuation.portfolio_id == portfolio.id)
+            .order_by(PaperPortfolioValuation.as_of_date)
+        )
+    )
+    peak = 0.0
+    max_drawdown = 0.0
+    current_drawdown = 0.0
+    for valuation in valuations:
+        peak = max(peak, valuation.equity)
+        drawdown = valuation.equity / peak - 1 if peak > 0 else 0.0
+        max_drawdown = min(max_drawdown, drawdown)
+        current_drawdown = drawdown
+    cash_weight = state.cash / equity if equity > 0 else 0.0
+    gross_exposure = state.position_value / equity if equity > 0 else 0.0
+    largest = weights[0] if weights else 0.0
+    top_three = sum(weights[:3])
+    hhi = sum(weight * weight for weight in weights)
+    warnings: list[str] = []
+    if equity <= 0:
+        warnings.append("No positive portfolio equity is available for risk diagnostics.")
+    if largest > 0.3:
+        warnings.append("Largest holding exceeds 30% of portfolio equity.")
+    if top_three > 0.65:
+        warnings.append("Top three holdings exceed 65% of portfolio equity.")
+    if cash_weight < 0.05 and equity > 0:
+        warnings.append("Cash reserve is below 5% of portfolio equity.")
+    if current_drawdown <= -0.1:
+        warnings.append("Current equity is more than 10% below its recorded peak.")
+    return PaperPortfolioDiagnosticsOut(
+        as_of_date=state.as_of_date,
+        cash_weight=round(cash_weight, 6),
+        gross_exposure=round(gross_exposure, 6),
+        largest_position_weight=round(largest, 6),
+        top_three_weight=round(top_three, 6),
+        concentration_hhi=round(hhi, 6),
+        current_drawdown=round(current_drawdown, 6),
+        max_drawdown=round(max_drawdown, 6),
+        warnings=warnings,
+    )
 
 
 @router.put("/snapshot", response_model=PaperPortfolioStateOut)
