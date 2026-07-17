@@ -103,8 +103,9 @@ that is constrained to the already risk-gated trade-plan draft.
   deltas in a single read-only review screen. Advisory drafts are rejected when
   persisted data is invalid and must be refreshed when the portfolio snapshot,
   positions, or equity differs from the draft.
-- [ ] P2-4 Add explicit `draft`, `reviewed`, `expired`, and `rejected`
-  advisory states. Do not add an `execute` state.
+- [x] P2-4 Add explicit `draft`, `reviewed`, `expired`, and `rejected`
+  advisory states. Expiry is based on synchronized bars for the draft's own
+  symbols after its next local trading date; no `execute` state exists.
 
 ### P3: Multi-Agent Research Loop
 

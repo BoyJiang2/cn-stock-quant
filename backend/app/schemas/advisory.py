@@ -139,6 +139,25 @@ class AdvisoryReviewResponse(BaseModel):
     reviewed_at: str
 
 
+class AdvisoryRejectRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class AdvisoryRejectResponse(BaseModel):
+    id: int
+    status: Literal["rejected"]
+    rejection_reason: str | None = None
+
+
+class AdvisoryStatusResponse(BaseModel):
+    id: int
+    status: Literal["draft", "reviewed", "expired", "rejected"]
+    as_of_date: date
+    earliest_execution_date: date | None = None
+    reviewed_at: datetime | None = None
+    rejection_reason: str | None = None
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]

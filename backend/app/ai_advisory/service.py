@@ -132,7 +132,6 @@ def create_advisory(
     if earliest_execution_date is None:
         warnings.append("No next trading date is available in the local calendar.")
     if payload.allow_remote_llm and not remote_llm_available:
-        status = "llm_disabled"
         warnings.append(
             "Remote LLM was requested but is not enabled and configured; the deterministic draft was retained."
         )
@@ -260,11 +259,10 @@ def stream_advisory_summary(
             text_parts.append(delta)
             yield delta
     except Exception:
-        record.status = "failed"
+        record.llm_provider = "failed"
         session.commit()
         raise
     else:
-        record.status = "llm_complete"
         record.llm_provider = provider_name
         record.llm_model = model_name
         record.llm_summary = "".join(text_parts)

@@ -1,10 +1,10 @@
 import hashlib
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai_advisory.providers import (
@@ -19,13 +19,17 @@ from app.ai_advisory.service import (
 )
 from app.core.config import settings
 from app.core.database import SessionLocal, get_session
-from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestWalkForwardValidation
+from app.data.repository import MarketDataRepository
+from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestWalkForwardValidation, DailyBar
 from app.notifications import NotificationDeliveryError, WeComGroupWebhookSender
 from app.schemas.advisory import (
     AdvisoryNotificationResponse,
+    AdvisoryRejectRequest,
+    AdvisoryRejectResponse,
     AdvisoryRequest,
     AdvisoryResponse,
     AdvisoryReviewResponse,
+    AdvisoryStatusResponse,
     EligibleValidationOptionOut,
 )
 
@@ -114,8 +118,18 @@ def mark_draft_reviewed(
     record = session.get(AdvisoryRun, advisory_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Advisory draft was not found.")
-    if record.status == "streaming":
-        raise HTTPException(status_code=409, detail="LLM summary is still streaming.")
+    _refresh_advisory_status(session, record)
+    if record.llm_provider == "streaming":
+        raise HTTPException(status_code=409, detail="LLM explanation is still streaming.")
+    if record.status in {"expired", "rejected"}:
+        session.commit()
+        raise HTTPException(status_code=409, detail=f"An {record.status} advisory draft cannot be reviewed.")
+    if record.status == "reviewed" and record.reviewed_at is not None:
+        return AdvisoryReviewResponse(
+            id=record.id,
+            status="reviewed",
+            reviewed_at=record.reviewed_at.isoformat(),
+        )
     record.status = "reviewed"
     record.reviewed_at = datetime.utcnow()
     session.commit()
@@ -123,6 +137,59 @@ def mark_draft_reviewed(
         id=record.id,
         status="reviewed",
         reviewed_at=record.reviewed_at.isoformat(),
+    )
+
+
+@router.post("/drafts/{advisory_id}/reject", response_model=AdvisoryRejectResponse)
+def reject_draft(
+    advisory_id: int,
+    payload: AdvisoryRejectRequest,
+    session: Session = Depends(get_session),
+) -> AdvisoryRejectResponse:
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    _refresh_advisory_status(session, record)
+    if record.llm_provider == "streaming":
+        raise HTTPException(status_code=409, detail="LLM explanation is still streaming.")
+    if record.status == "expired":
+        session.commit()
+        raise HTTPException(status_code=409, detail="An expired advisory draft cannot be rejected.")
+    if record.status == "rejected":
+        return AdvisoryRejectResponse(
+            id=record.id,
+            status="rejected",
+            rejection_reason=_rejection_reason(record),
+        )
+    if payload.reason:
+        _set_rejection_reason(record, payload.reason)
+    record.status = "rejected"
+    session.commit()
+    return AdvisoryRejectResponse(
+        id=record.id,
+        status="rejected",
+        rejection_reason=_rejection_reason(record),
+    )
+
+
+@router.get("/drafts/{advisory_id}/status", response_model=AdvisoryStatusResponse)
+def advisory_status(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> AdvisoryStatusResponse:
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    changed, earliest_execution_date = _refresh_advisory_status(session, record)
+    if changed:
+        session.commit()
+    return AdvisoryStatusResponse(
+        id=record.id,
+        status=record.status,
+        as_of_date=record.as_of_date,
+        earliest_execution_date=earliest_execution_date,
+        reviewed_at=record.reviewed_at,
+        rejection_reason=_rejection_reason(record),
     )
 
 
@@ -137,6 +204,9 @@ def notify_reviewed_draft_to_wecom(
     record = session.get(AdvisoryRun, advisory_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    changed, _ = _refresh_advisory_status(session, record)
+    if changed:
+        session.commit()
     if record.status != "reviewed" or record.reviewed_at is None:
         raise HTTPException(
             status_code=409,
@@ -202,6 +272,13 @@ def stream_draft_summary(
     record = session.get(AdvisoryRun, advisory_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    changed, _ = _refresh_advisory_status(session, record)
+    if changed:
+        session.commit()
+    if record.status in {"expired", "rejected"}:
+        raise HTTPException(status_code=409, detail=f"An {record.status} advisory draft cannot request an LLM explanation.")
+    if record.llm_provider == "streaming":
+        raise HTTPException(status_code=409, detail="LLM explanation is already streaming.")
     if not record.remote_llm_requested:
         raise HTTPException(
             status_code=409,
@@ -224,8 +301,7 @@ def stream_draft_summary(
         provider.validate_configuration()
     except LLMProviderConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    record.status = "streaming"
-    record.llm_provider = "openai_responses"
+    record.llm_provider = "streaming"
     record.llm_model = settings.openai_model
     session.commit()
 
@@ -258,6 +334,80 @@ def stream_draft_summary(
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\\ndata: {json.dumps(data, ensure_ascii=False)}\\n\\n"
+
+
+_LEGACY_DRAFT_STATUSES = {"llm_complete", "llm_disabled", "streaming"}
+
+
+def _refresh_advisory_status(session: Session, record: AdvisoryRun) -> tuple[bool, date | None]:
+    """Normalize legacy technical states and expire drafts after their execution window."""
+    changed = False
+    if record.status in _LEGACY_DRAFT_STATUSES:
+        record.status = "draft"
+        changed = True
+    elif record.status == "failed":
+        record.status = "rejected"
+        _set_rejection_reason(record, "Legacy LLM explanation failed; create a fresh research draft.")
+        changed = True
+    repository = MarketDataRepository(session)
+    execution_dates = repository.trading_dates(
+        record.as_of_date + timedelta(days=1),
+        record.as_of_date + timedelta(days=14),
+    )
+    earliest_execution_date = execution_dates[0] if execution_dates else None
+    symbols = _advisory_symbols(record)
+    latest_dates = []
+    if symbols:
+        rows = session.execute(
+            select(DailyBar.symbol, func.max(DailyBar.trade_date))
+            .where(DailyBar.symbol.in_(symbols))
+            .group_by(DailyBar.symbol)
+        )
+        latest_dates = [latest for _, latest in rows if latest is not None]
+    fully_synced_through = min(latest_dates) if len(latest_dates) == len(symbols) else None
+    if (
+        record.status in {"draft", "reviewed"}
+        and earliest_execution_date is not None
+        and fully_synced_through is not None
+        and fully_synced_through > earliest_execution_date
+    ):
+        record.status = "expired"
+        changed = True
+    return changed, earliest_execution_date
+
+
+def _advisory_symbols(record: AdvisoryRun) -> list[str]:
+    try:
+        request = json.loads(record.request_json)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    symbols = request.get("symbols") if isinstance(request, dict) else None
+    return sorted({symbol for symbol in symbols if isinstance(symbol, str) and symbol}) if isinstance(symbols, list) else []
+
+
+def _rejection_reason(record: AdvisoryRun) -> str | None:
+    try:
+        payload = json.loads(record.risk_json)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    lifecycle = payload.get("lifecycle") if isinstance(payload, dict) else None
+    reason = lifecycle.get("rejection_reason") if isinstance(lifecycle, dict) else None
+    return reason if isinstance(reason, str) and reason else None
+
+
+def _set_rejection_reason(record: AdvisoryRun, reason: str) -> None:
+    try:
+        payload = json.loads(record.risk_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="Cannot store a rejection reason for corrupt advisory data.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=409, detail="Cannot store a rejection reason for corrupt advisory data.")
+    lifecycle = payload.get("lifecycle")
+    if not isinstance(lifecycle, dict):
+        lifecycle = {}
+        payload["lifecycle"] = lifecycle
+    lifecycle["rejection_reason"] = reason.strip()
+    record.risk_json = json.dumps(payload, ensure_ascii=True, sort_keys=True)
 
 
 def _wecom_message(record: AdvisoryRun) -> str:

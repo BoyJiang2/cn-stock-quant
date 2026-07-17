@@ -21,6 +21,7 @@ from app.models.entities import (
     IndexDailyBar,
     NewsItem,
     Stock,
+    TradingCalendar,
 )
 from app.notifications import NotificationReceipt
 from app.schemas.advisory import AdvisoryRequest
@@ -94,6 +95,18 @@ def _seed_index_bars(session_factory: sessionmaker, as_of_date: date) -> None:
                     amount=100_000.0,
                 )
             )
+        session.commit()
+    finally:
+        session.close()
+
+
+def _seed_open_calendar(session_factory: sessionmaker, start_date: date, end_date: date) -> None:
+    session = session_factory()
+    try:
+        current = start_date
+        while current <= end_date:
+            session.merge(TradingCalendar(trade_date=current, is_open=True))
+            current += timedelta(days=1)
         session.commit()
     finally:
         session.close()
@@ -341,7 +354,7 @@ def test_advisory_retains_deterministic_draft_when_remote_llm_is_not_enabled():
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "llm_disabled"
+    assert body["status"] == "draft"
     assert body["remote_llm_enabled"] is False
     assert body["trade_plan"]
     assert any("Remote LLM was requested" in warning for warning in body["warnings"])
@@ -524,11 +537,91 @@ def test_advisory_stream_persists_text_from_the_provider():
         ) == ["First part. ", "Second part."]
         record = session.get(AdvisoryRun, draft.id)
         assert record is not None
-        assert record.status == "llm_complete"
+        assert record.status == "draft"
         assert record.llm_summary == "First part. Second part."
         assert record.llm_provider == "test"
     finally:
         session.close()
+
+
+def test_advisory_lifecycle_requires_human_review_or_rejection_and_persists_reason():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    _seed_open_calendar(session_factory, as_of_date + timedelta(days=1), as_of_date + timedelta(days=14))
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={
+            "strategy_name": "moving_average",
+            "as_of_date": as_of_date.isoformat(),
+            "symbols": ["000001"],
+            "cash": 100_000,
+        },
+    )
+    advisory_id = draft.json()["id"]
+
+    initial = client.get(f"/api/advisory/drafts/{advisory_id}/status")
+    assert initial.status_code == 200
+    assert initial.json()["status"] == "draft"
+    assert initial.json()["earliest_execution_date"] == (as_of_date + timedelta(days=1)).isoformat()
+
+    reviewed = client.post(f"/api/advisory/drafts/{advisory_id}/review")
+    assert reviewed.status_code == 200
+    assert reviewed.json()["status"] == "reviewed"
+    assert client.post(f"/api/advisory/drafts/{advisory_id}/review").status_code == 200
+
+    rejected = client.post(f"/api/advisory/drafts/{advisory_id}/reject", json={"reason": "Position size is too concentrated."})
+    assert rejected.status_code == 200
+    assert rejected.json() == {
+        "id": advisory_id,
+        "status": "rejected",
+        "rejection_reason": "Position size is too concentrated.",
+    }
+    assert client.get(f"/api/advisory/drafts/{advisory_id}/status").json()["status"] == "rejected"
+
+
+def test_advisory_expires_after_a_later_local_trading_date_is_available():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    _seed_open_calendar(session_factory, as_of_date + timedelta(days=1), as_of_date + timedelta(days=14))
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={
+            "strategy_name": "moving_average",
+            "as_of_date": as_of_date.isoformat(),
+            "symbols": ["000001"],
+            "cash": 100_000,
+        },
+    )
+    advisory_id = draft.json()["id"]
+    session = session_factory()
+    try:
+        for offset in range(1, 5):
+            trade_date = as_of_date + timedelta(days=offset)
+            session.add(
+                DailyBar(
+                    symbol="000001",
+                    trade_date=trade_date,
+                    open=20.0,
+                    high=20.0,
+                    low=20.0,
+                    close=20.0,
+                    volume=1_000.0,
+                    amount=20_000.0,
+                    adj="qfq",
+                )
+            )
+        session.commit()
+    finally:
+        session.close()
+
+    status = client.get(f"/api/advisory/drafts/{advisory_id}/status")
+    assert status.status_code == 200
+    assert status.json()["status"] == "expired"
+    assert client.post(f"/api/advisory/drafts/{advisory_id}/review").status_code == 409
 
 
 def test_reviewed_advisory_can_send_one_audited_wecom_notification(monkeypatch):

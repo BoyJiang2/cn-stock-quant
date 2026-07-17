@@ -20,7 +20,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { Bot, FileText, Plus, Sparkles, Trash2 } from "lucide-react";
+import { Bot, Check, CircleX, FileText, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
@@ -134,7 +134,7 @@ interface ValidationEvidence {
 
 interface AdvisoryDraft {
   id: number;
-  status: "draft" | "llm_disabled" | "failed";
+  status: "draft" | "reviewed" | "expired" | "rejected";
   as_of_date: string;
   earliest_execution_date: string | null;
   price_basis: "research_close_only";
@@ -197,6 +197,7 @@ export function AdvisoryPage() {
   const [draft, setDraft] = useState<AdvisoryDraft | null>(null);
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [updatingLifecycle, setUpdatingLifecycle] = useState(false);
   const [explanation, setExplanation] = useState("");
 
   useEffect(() => {
@@ -305,6 +306,33 @@ export function AdvisoryPage() {
       message.error(error.message || "模型解释生成失败");
     } finally {
       setStreaming(false);
+    }
+  };
+
+  const updateLifecycle = async (action: "review" | "reject") => {
+    if (!draft) {
+      return;
+    }
+    setUpdatingLifecycle(true);
+    try {
+      const status = await api.get<{ status: AdvisoryDraft["status"] }>(`/api/advisory/drafts/${draft.id}/status`);
+      if (status.data.status !== draft.status) {
+        setDraft((current) => current ? { ...current, status: status.data.status } : current);
+      }
+      if (status.data.status === "expired" || status.data.status === "rejected") {
+        message.warning(`Advisory draft is ${status.data.status}; create a fresh draft instead.`);
+        return;
+      }
+      const response = await api.post<{ status: AdvisoryDraft["status"] }>(
+        `/api/advisory/drafts/${draft.id}/${action}`,
+        action === "reject" ? {} : undefined
+      );
+      setDraft((current) => current ? { ...current, status: response.data.status } : current);
+      message.success(action === "review" ? "Research draft marked as reviewed." : "Research draft rejected.");
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || "Failed to update advisory lifecycle.");
+    } finally {
+      setUpdatingLifecycle(false);
     }
   };
 
@@ -473,7 +501,17 @@ export function AdvisoryPage() {
 
       {draft && (
         <Space direction="vertical" size={16} style={{ display: "flex", marginTop: 16 }}>
-          <Card className="panel" title="草案概览" extra={<Tag color={draft.status === "draft" ? "blue" : "default"}>{draft.status}</Tag>}>
+          <Card
+            className="panel"
+            title="草案概览"
+            extra={
+              <Space>
+                <Tag color={draft.status === "draft" ? "blue" : draft.status === "reviewed" ? "green" : draft.status === "rejected" ? "red" : "orange"}>{draft.status}</Tag>
+                <Button disabled={draft.status !== "draft"} icon={<Check size={16} />} loading={updatingLifecycle} onClick={() => updateLifecycle("review")}>Mark reviewed</Button>
+                <Button danger disabled={draft.status !== "draft" && draft.status !== "reviewed"} icon={<CircleX size={16} />} loading={updatingLifecycle} onClick={() => updateLifecycle("reject")}>Reject</Button>
+              </Space>
+            }
+          >
             <Descriptions column={{ xs: 1, sm: 2, lg: 4 }} size="small">
               <Descriptions.Item label="草案编号">#{draft.id}</Descriptions.Item>
               <Descriptions.Item label="OOS validation">
