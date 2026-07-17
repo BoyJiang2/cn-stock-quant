@@ -581,6 +581,31 @@ def test_advisory_lifecycle_requires_human_review_or_rejection_and_persists_reas
     assert client.get(f"/api/advisory/drafts/{advisory_id}/status").json()["status"] == "rejected"
 
 
+def test_research_agent_returns_only_cited_snapshot_facts():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    _seed_news(
+        session_factory,
+        symbol="000001",
+        source_id="research-fact",
+        published_at=datetime(2026, 7, 13, 9, 0),
+        fetched_at=datetime(2026, 7, 13, 9, 5),
+        event_type="announcement",
+    )
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={"strategy_name": "moving_average", "as_of_date": as_of_date.isoformat(), "symbols": ["000001"], "cash": 100_000},
+    )
+    response = client.get(f"/api/advisory/drafts/{draft.json()['id']}/research")
+
+    assert response.status_code == 200
+    facts = response.json()["facts"]
+    assert any(item["source_type"] == "news" and "2026-07-13" in item["citation"] for item in facts)
+    assert client.get("/api/advisory/drafts/999999/research").status_code == 404
+
+
 def test_advisory_expires_after_a_later_local_trading_date_is_available():
     session_factory = _session_factory()
     as_of_date = date(2026, 7, 14)

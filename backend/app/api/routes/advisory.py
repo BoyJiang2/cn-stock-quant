@@ -29,6 +29,8 @@ from app.schemas.advisory import (
     AdvisoryRequest,
     AdvisoryResponse,
     AdvisoryReviewResponse,
+    ResearchAgentResponse,
+    ResearchFactOut,
     AdvisoryStatusResponse,
     EligibleValidationOptionOut,
 )
@@ -191,6 +193,58 @@ def advisory_status(
         reviewed_at=record.reviewed_at,
         rejection_reason=_rejection_reason(record),
     )
+
+
+@router.get("/drafts/{advisory_id}/research", response_model=ResearchAgentResponse)
+def research_facts(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> ResearchAgentResponse:
+    """Expose deterministic, cited facts from the immutable advisory evidence snapshot."""
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    try:
+        risk_payload = json.loads(record.risk_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="Advisory evidence snapshot is corrupt.") from exc
+    if not isinstance(risk_payload, dict) or not isinstance(risk_payload.get("evidence", {}), dict):
+        raise HTTPException(status_code=409, detail="Advisory evidence snapshot is corrupt.")
+    evidence = risk_payload.get("evidence", {})
+    facts: list[ResearchFactOut] = []
+    market = evidence.get("market", {})
+    if market is not None and not isinstance(market, dict):
+        raise HTTPException(status_code=409, detail="Advisory market evidence is corrupt.")
+    for reason in (market or {}).get("reasons", [])[:5] if isinstance((market or {}).get("reasons", []), list) else []:
+        if isinstance(reason, str):
+            facts.append(ResearchFactOut(claim=reason, source_type="market", citation="local CSI 300 research-close snapshot", observed_at=str(market.get("data_end_date") or record.as_of_date)))
+    news = evidence.get("news", {})
+    if news is not None and not isinstance(news, dict):
+        raise HTTPException(status_code=409, detail="Advisory news evidence is corrupt.")
+    news_items = (news or {}).get("items", [])
+    for item in news_items[:10] if isinstance(news_items, list) else []:
+        known_at = item.get("known_at") if isinstance(item, dict) else None
+        try:
+            known_date = datetime.fromisoformat(str(known_at).replace("Z", "+00:00")).date()
+        except ValueError:
+            continue
+        if isinstance(item.get("title"), str) and known_date <= record.as_of_date:
+            citation = " | ".join(str(item.get(key) or "-") for key in ("source", "symbol", "published_at", "known_at"))
+            facts.append(ResearchFactOut(claim=item["title"], source_type="news", citation=citation, observed_at=str(known_at)))
+    factors = evidence.get("factors", {})
+    if factors is not None and not isinstance(factors, dict):
+        raise HTTPException(status_code=409, detail="Advisory factor evidence is corrupt.")
+    factor_symbols = (factors or {}).get("symbols", [])
+    for symbol in factor_symbols[:10] if isinstance(factor_symbols, list) else []:
+        if isinstance(symbol, dict) and symbol.get("available"):
+            facts.append(ResearchFactOut(claim=f"Observed trailing factors are available for {symbol.get('symbol')}.", source_type="factor", citation="local price/volume factor snapshot", observed_at=str(factors.get("data_end_date") or record.as_of_date)))
+    validation = evidence.get("validation") if isinstance(evidence, dict) else None
+    if isinstance(validation, dict) and validation.get("validation_id"):
+        facts.append(ResearchFactOut(claim=f"Eligible rolling OOS validation #{validation['validation_id']} is attached.", source_type="validation", citation=f"backtest #{validation.get('backtest_run_id', 'unknown')}", observed_at=str(validation.get("source_as_of_date") or record.as_of_date)))
+    warnings = ["Facts are extracted from the persisted local snapshot; they are not predictions or trade instructions."]
+    if not facts:
+        warnings.append("The advisory has no extractable research facts in its saved evidence snapshot.")
+    return ResearchAgentResponse(advisory_id=record.id, as_of_date=record.as_of_date, facts=facts, warnings=warnings)
 
 
 @router.post(

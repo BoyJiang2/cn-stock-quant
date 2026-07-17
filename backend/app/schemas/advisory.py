@@ -158,6 +158,20 @@ class AdvisoryStatusResponse(BaseModel):
     rejection_reason: str | None = None
 
 
+class ResearchFactOut(BaseModel):
+    claim: str
+    source_type: Literal["market", "news", "factor", "validation"]
+    citation: str
+    observed_at: str | None = None
+
+
+class ResearchAgentResponse(BaseModel):
+    advisory_id: int
+    as_of_date: date
+    facts: list[ResearchFactOut] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]
