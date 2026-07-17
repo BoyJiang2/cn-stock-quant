@@ -99,8 +99,10 @@ that is constrained to the already risk-gated trade-plan draft.
   daily research-close valuation history through explicit user snapshots.
 - [x] P2-2 Add concentration, cash, drawdown, and exposure diagnostics from
   persisted paper-portfolio snapshots and valuation history.
-- [ ] P2-3 Show current holdings, risk-gated target weights, and trade-plan
-  deltas in a single review screen.
+- [x] P2-3 Show current holdings, risk-gated target weights, and trade-plan
+  deltas in a single read-only review screen. Advisory drafts are rejected when
+  persisted data is invalid and must be refreshed when the portfolio snapshot,
+  positions, or equity differs from the draft.
 - [ ] P2-4 Add explicit `draft`, `reviewed`, `expired`, and `rejected`
   advisory states. Do not add an `execute` state.
 

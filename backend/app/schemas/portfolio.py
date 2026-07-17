@@ -50,3 +50,28 @@ class PaperPortfolioDiagnosticsOut(BaseModel):
     current_drawdown: float
     max_drawdown: float
     warnings: list[str] = Field(default_factory=list)
+
+
+class PaperPortfolioAdvisoryReviewRowOut(BaseModel):
+    symbol: str
+    name: str | None = None
+    current_quantity: int
+    advisory_current_quantity: int | None = None
+    target_quantity: int | None = None
+    quantity_delta: int | None = None
+    suggested_side: str | None = None
+    target_weight: float | None = None
+    reference_price: float | None = None
+    estimated_delta_amount: float | None = None
+
+
+class PaperPortfolioAdvisoryReviewOut(BaseModel):
+    advisory_id: int
+    advisory_strategy_name: str
+    advisory_as_of_date: date
+    advisory_status: str
+    portfolio_as_of_date: date | None = None
+    portfolio_equity: float
+    requires_refresh: bool
+    rows: list[PaperPortfolioAdvisoryReviewRowOut] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

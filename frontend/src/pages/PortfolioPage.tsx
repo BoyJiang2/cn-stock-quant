@@ -1,12 +1,18 @@
 import { Alert, Button, Card, Col, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Row, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { Plus, RefreshCw, Save, Trash2, WalletCards } from "lucide-react";
+import { Plus, RefreshCw, Save, Search, Trash2, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { MetricCard } from "../components/MetricCard";
-import type { PaperPortfolioDiagnostics, PaperPortfolioSnapshot, PaperPortfolioState, PaperPortfolioValuation } from "../types";
+import type {
+  PaperPortfolioAdvisoryReview,
+  PaperPortfolioDiagnostics,
+  PaperPortfolioSnapshot,
+  PaperPortfolioState,
+  PaperPortfolioValuation
+} from "../types";
 
 const { Text, Title } = Typography;
 
@@ -23,8 +29,11 @@ export function PortfolioPage() {
   const [portfolio, setPortfolio] = useState<PaperPortfolioState | null>(null);
   const [diagnostics, setDiagnostics] = useState<PaperPortfolioDiagnostics | null>(null);
   const [history, setHistory] = useState<PaperPortfolioValuation[]>([]);
+  const [advisoryId, setAdvisoryId] = useState<number | null>(null);
+  const [advisoryReview, setAdvisoryReview] = useState<PaperPortfolioAdvisoryReview | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
 
   const loadPortfolio = async () => {
     setLoading(true);
@@ -82,6 +91,23 @@ export function PortfolioPage() {
     }
   };
 
+  const loadAdvisoryReview = async () => {
+    if (!advisoryId) {
+      message.warning("Enter an advisory draft ID first.");
+      return;
+    }
+    setReviewing(true);
+    try {
+      const response = await api.get<PaperPortfolioAdvisoryReview>("/api/portfolio/review", { params: { advisory_id: advisoryId } });
+      setAdvisoryReview(response.data);
+    } catch (error: any) {
+      setAdvisoryReview(null);
+      message.error(error.response?.data?.detail || "Failed to load advisory review.");
+    } finally {
+      setReviewing(false);
+    }
+  };
+
   const positionColumns: ColumnsType<NonNullable<PaperPortfolioState>["positions"][number]> = [
     { title: "代码", dataIndex: "symbol", width: 100 },
     { title: "名称", dataIndex: "name", width: 150, render: (value: string | null) => value || "-" },
@@ -101,6 +127,31 @@ export function PortfolioPage() {
     { title: "账户权益", dataIndex: "equity", align: "right", render: (value: number) => formatAmount(value) },
     { title: "持仓市值", dataIndex: "position_value", align: "right", render: (value: number) => formatAmount(value) },
     { title: "可用现金", dataIndex: "cash", align: "right", render: (value: number) => formatAmount(value) }
+  ];
+
+  const advisoryReviewColumns: ColumnsType<PaperPortfolioAdvisoryReview["rows"][number]> = [
+    { title: "Code", dataIndex: "symbol", width: 100 },
+    { title: "Name", dataIndex: "name", width: 140, render: (value: string | null) => value || "-" },
+    { title: "Current", dataIndex: "current_quantity", align: "right" },
+    { title: "Draft target", dataIndex: "target_quantity", align: "right", render: (value: number | null) => value ?? "-" },
+    {
+      title: "Delta from current",
+      dataIndex: "quantity_delta",
+      align: "right",
+      render: (value: number | null) => value === null ? "-" : value > 0 ? `+${value}` : value
+    },
+    {
+      title: "Action",
+      dataIndex: "suggested_side",
+      render: (value: "buy" | "sell" | "hold" | null) => {
+        if (!value) return "-";
+        const color = value === "buy" ? "green" : value === "sell" ? "red" : "default";
+        return <Tag color={color}>{value.toUpperCase()}</Tag>;
+      }
+    },
+    { title: "Target weight", dataIndex: "target_weight", align: "right", render: (value: number | null) => value === null ? "-" : `${(value * 100).toFixed(2)}%` },
+    { title: "Research close", dataIndex: "reference_price", align: "right", render: (value: number | null) => value === null ? "-" : value.toFixed(2) },
+    { title: "Estimated delta", dataIndex: "estimated_delta_amount", align: "right", render: (value: number | null) => value === null ? "-" : formatAmount(value) }
   ];
 
   const latestHistory = useMemo(() => [...history].reverse(), [history]);
@@ -209,6 +260,42 @@ export function PortfolioPage() {
           </Card>
         </Col>
       </Row>
+
+      <Card
+        className="panel"
+        style={{ marginTop: 16 }}
+        title="Advisory draft review"
+        extra={
+          <Space>
+            <InputNumber aria-label="Advisory draft ID" min={1} onChange={(value) => setAdvisoryId(value)} placeholder="Draft ID" value={advisoryId} />
+            <Button icon={<Search size={16} />} loading={reviewing} onClick={loadAdvisoryReview} type="primary">Load</Button>
+          </Space>
+        }
+      >
+        <Text type="secondary">Compare a persisted advisory draft with current paper holdings. This view is read-only and cannot place orders.</Text>
+        {advisoryReview && (
+          <>
+            <Descriptions column={{ xs: 1, md: 4 }} size="small" style={{ marginTop: 16 }}>
+              <Descriptions.Item label="Draft">#{advisoryReview.advisory_id}</Descriptions.Item>
+              <Descriptions.Item label="Strategy">{advisoryReview.advisory_strategy_name}</Descriptions.Item>
+              <Descriptions.Item label="Draft date">{advisoryReview.advisory_as_of_date}</Descriptions.Item>
+              <Descriptions.Item label="Portfolio date">{advisoryReview.portfolio_as_of_date || "No snapshot"}</Descriptions.Item>
+            </Descriptions>
+            {advisoryReview.warnings.map((warning) => (
+              <Alert key={warning} message={warning} showIcon type={advisoryReview.requires_refresh ? "warning" : "info"} style={{ marginTop: 10 }} />
+            ))}
+            <Table
+              columns={advisoryReviewColumns}
+              dataSource={advisoryReview.rows}
+              pagination={false}
+              rowKey="symbol"
+              scroll={{ x: 1050 }}
+              size="small"
+              style={{ marginTop: 16 }}
+            />
+          </>
+        )}
+      </Card>
 
       <Card className="panel" style={{ marginTop: 16 }} title="估值历史">
         <Table

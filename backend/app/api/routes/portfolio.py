@@ -1,11 +1,16 @@
+import json
+from math import isfinite
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.data.repository import MarketDataRepository
-from app.models.entities import PaperPortfolio, PaperPortfolioPosition, PaperPortfolioValuation, Stock
+from app.models.entities import AdvisoryRun, PaperPortfolio, PaperPortfolioPosition, PaperPortfolioValuation, Stock
 from app.schemas.portfolio import (
+    PaperPortfolioAdvisoryReviewOut,
+    PaperPortfolioAdvisoryReviewRowOut,
     PaperPortfolioPositionOut,
     PaperPortfolioDiagnosticsOut,
     PaperPortfolioSnapshotIn,
@@ -96,6 +101,88 @@ def portfolio_diagnostics(session: Session = Depends(get_session)) -> PaperPortf
         concentration_hhi=round(hhi, 6),
         current_drawdown=round(current_drawdown, 6),
         max_drawdown=round(max_drawdown, 6),
+        warnings=warnings,
+    )
+
+
+@router.get("/review", response_model=PaperPortfolioAdvisoryReviewOut)
+def portfolio_advisory_review(
+    advisory_id: int = Query(ge=1),
+    session: Session = Depends(get_session),
+) -> PaperPortfolioAdvisoryReviewOut:
+    """Compare one persisted advisory draft with the current paper snapshot without mutating either."""
+    advisory = session.get(AdvisoryRun, advisory_id)
+    if advisory is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+
+    try:
+        accepted_weights = _accepted_weights(advisory.risk_json)
+        plan_by_symbol = _trade_plan_by_symbol(advisory.trade_plan_json)
+        advisory_positions = _advisory_positions(advisory.request_json)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=f"Advisory draft cannot be reviewed: {exc}") from exc
+
+    portfolio = session.scalar(select(PaperPortfolio).where(PaperPortfolio.name == _DEFAULT_PORTFOLIO_NAME))
+    state = _state_out(session, portfolio) if portfolio is not None else None
+    current_positions = {position.symbol: position for position in state.positions} if state else {}
+    symbols = sorted(set(current_positions) | set(accepted_weights) | set(plan_by_symbol))
+    rows: list[PaperPortfolioAdvisoryReviewRowOut] = []
+    for symbol in symbols:
+        current = current_positions.get(symbol)
+        plan = plan_by_symbol.get(symbol)
+        target_quantity = _integer(plan.get("target_quantity")) if plan else None
+        current_quantity = current.quantity if current else 0
+        quantity_delta = target_quantity - current_quantity if target_quantity is not None else None
+        reference_price = _number(plan.get("reference_price")) if plan else None
+        if reference_price is None and current is not None:
+            reference_price = current.reference_price
+        target_weight = _number(accepted_weights.get(symbol))
+        stock = session.get(Stock, symbol)
+        rows.append(
+            PaperPortfolioAdvisoryReviewRowOut(
+                symbol=symbol,
+                name=current.name if current and current.name else (stock.name if stock else None),
+                current_quantity=current_quantity,
+                advisory_current_quantity=advisory_positions.get(symbol, 0),
+                target_quantity=target_quantity,
+                quantity_delta=quantity_delta,
+                suggested_side=("buy" if quantity_delta > 0 else "sell" if quantity_delta < 0 else "hold")
+                if quantity_delta is not None
+                else None,
+                target_weight=target_weight,
+                reference_price=reference_price,
+                estimated_delta_amount=round(abs(quantity_delta) * reference_price, 2)
+                if quantity_delta is not None and reference_price is not None
+                else None,
+            )
+        )
+
+    position_changed = any(
+        (current_positions.get(symbol).quantity if symbol in current_positions else 0) != quantity
+        for symbol, quantity in advisory_positions.items()
+    ) or any(symbol not in advisory_positions for symbol in current_positions)
+    equity_changed = state is not None and abs(state.equity - advisory.total_equity) > 0.01
+    requires_refresh = state is None or state.as_of_date != advisory.as_of_date or position_changed or equity_changed
+    warnings = [
+        "Read-only comparison only. It does not create orders or modify the paper portfolio.",
+        "Reference prices are research closes and are not executable broker prices.",
+    ]
+    if requires_refresh:
+        warnings.insert(
+            0,
+            "The current paper snapshot differs from this advisory draft. Refresh the advisory before acting on any delta.",
+        )
+    if advisory.status != "draft":
+        warnings.append(f"Advisory status is {advisory.status}; it is not an active executable instruction.")
+    return PaperPortfolioAdvisoryReviewOut(
+        advisory_id=advisory.id,
+        advisory_strategy_name=advisory.strategy_name,
+        advisory_as_of_date=advisory.as_of_date,
+        advisory_status=advisory.status,
+        portfolio_as_of_date=state.as_of_date if state else None,
+        portfolio_equity=state.equity if state else 0.0,
+        requires_refresh=requires_refresh,
+        rows=rows,
         warnings=warnings,
     )
 
@@ -206,3 +293,89 @@ def _state_out(session: Session, portfolio: PaperPortfolio) -> PaperPortfolioSta
         equity=round(portfolio.cash + position_value, 2),
         positions=position_out,
     )
+
+
+def _json_object(value: str, label: str) -> dict:
+    try:
+        decoded = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError(f"{label} is not valid JSON") from None
+    if not isinstance(decoded, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return decoded
+
+
+def _json_list(value: str, label: str) -> list[dict]:
+    try:
+        decoded = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError(f"{label} is not valid JSON") from None
+    if not isinstance(decoded, list) or not all(isinstance(item, dict) for item in decoded):
+        raise ValueError(f"{label} must be a JSON list of objects")
+    return decoded
+
+
+def _integer(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not isfinite(numeric) or not numeric.is_integer():
+        return None
+    parsed = int(numeric)
+    return parsed if parsed >= 0 else None
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return parsed if isfinite(parsed) and parsed >= 0 else None
+
+
+def _accepted_weights(value: str) -> dict[str, float]:
+    accepted = _json_object(value, "risk_json").get("accepted")
+    if not isinstance(accepted, dict):
+        raise ValueError("risk_json.accepted must be an object")
+    weights: dict[str, float] = {}
+    for symbol, weight in accepted.items():
+        numeric = _number(weight)
+        if not isinstance(symbol, str) or not symbol or numeric is None or numeric > 1:
+            raise ValueError("risk_json.accepted contains an invalid target weight")
+        weights[symbol] = numeric
+    return weights
+
+
+def _trade_plan_by_symbol(value: str) -> dict[str, dict]:
+    plan_by_symbol: dict[str, dict] = {}
+    for item in _json_list(value, "trade_plan_json"):
+        symbol = item.get("symbol")
+        if (
+            not isinstance(symbol, str)
+            or not symbol
+            or symbol in plan_by_symbol
+            or _integer(item.get("current_quantity")) is None
+            or _integer(item.get("target_quantity")) is None
+            or _number(item.get("reference_price")) is None
+        ):
+            raise ValueError("trade_plan_json contains an invalid trade")
+        plan_by_symbol[symbol] = item
+    return plan_by_symbol
+
+
+def _advisory_positions(value: str) -> dict[str, int]:
+    positions = _json_object(value, "request_json").get("positions")
+    if not isinstance(positions, dict):
+        raise ValueError("request_json.positions must be an object")
+    normalized: dict[str, int] = {}
+    for symbol, quantity in positions.items():
+        parsed = _integer(quantity)
+        if not isinstance(symbol, str) or not symbol or parsed is None:
+            raise ValueError("request_json.positions contains an invalid position")
+        normalized[symbol] = parsed
+    return normalized

@@ -260,3 +260,28 @@ export interface PaperPortfolioValuation {
   position_value: number;
   equity: number;
 }
+
+export interface PaperPortfolioAdvisoryReviewRow {
+  symbol: string;
+  name: string | null;
+  current_quantity: number;
+  advisory_current_quantity: number | null;
+  target_quantity: number | null;
+  quantity_delta: number | null;
+  suggested_side: "buy" | "sell" | "hold" | null;
+  target_weight: number | null;
+  reference_price: number | null;
+  estimated_delta_amount: number | null;
+}
+
+export interface PaperPortfolioAdvisoryReview {
+  advisory_id: number;
+  advisory_strategy_name: string;
+  advisory_as_of_date: string;
+  advisory_status: string;
+  portfolio_as_of_date: string | null;
+  portfolio_equity: number;
+  requires_refresh: boolean;
+  rows: PaperPortfolioAdvisoryReviewRow[];
+  warnings: string[];
+}

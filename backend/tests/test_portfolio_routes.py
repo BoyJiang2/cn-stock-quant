@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 from fastapi.testclient import TestClient
@@ -7,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import Base, DailyBar, Stock
+from app.models.entities import AdvisoryRun, Base, DailyBar, Stock
 
 
 def _session_factory() -> sessionmaker:
@@ -54,6 +55,43 @@ def _seed_close(session_factory: sessionmaker, symbol: str, trade_date: date, cl
             )
         )
         session.commit()
+    finally:
+        session.close()
+
+
+def _seed_advisory(
+    session_factory: sessionmaker,
+    *,
+    as_of_date: date,
+    trade_plan: list[dict],
+    accepted: dict[str, float],
+    total_equity: float = 10_000.0,
+) -> int:
+    session = session_factory()
+    try:
+        record = AdvisoryRun(
+            as_of_date=as_of_date,
+            strategy_name="moving_average",
+            status="draft",
+            total_equity=total_equity,
+            request_hash="a" * 64,
+            request_json=json.dumps(
+                {
+                    "positions": {
+                        item["symbol"]: item["current_quantity"]
+                        for item in trade_plan
+                        if isinstance(item.get("symbol"), str) and "current_quantity" in item
+                    }
+                }
+            ),
+            risk_json=json.dumps({"accepted": accepted}),
+            trade_plan_json=json.dumps(trade_plan),
+            remote_llm_requested=False,
+            llm_summary="",
+        )
+        session.add(record)
+        session.commit()
+        return record.id
     finally:
         session.close()
 
@@ -177,3 +215,128 @@ def test_paper_portfolio_diagnostics_use_saved_positions_and_valuation_history()
     assert body["current_drawdown"] == -0.1
     assert body["max_drawdown"] == -0.1
     assert any("Largest holding" in warning for warning in body["warnings"])
+
+
+def test_portfolio_review_recomputes_trade_deltas_from_current_snapshot():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    _seed_close(session_factory, "000002", as_of_date, 20.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        accepted={"000001": 0.4, "000002": 0.2},
+        trade_plan=[
+            {
+                "symbol": "000001",
+                "side": "buy",
+                "current_quantity": 100,
+                "target_quantity": 300,
+                "quantity": 200,
+                "reference_price": 10.0,
+                "estimated_amount": 2_000.0,
+            },
+            {
+                "symbol": "000002",
+                "side": "buy",
+                "current_quantity": 0,
+                "target_quantity": 100,
+                "quantity": 100,
+                "reference_price": 20.0,
+                "estimated_amount": 2_000.0,
+            },
+        ],
+    )
+    client = _client(session_factory)
+    assert client.put(
+        "/api/portfolio/snapshot",
+        json={"as_of_date": as_of_date.isoformat(), "cash": 1_000, "positions": [{"symbol": "000001", "quantity": 200}]},
+    ).status_code == 200
+
+    response = client.get(f"/api/portfolio/review?advisory_id={advisory_id}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["requires_refresh"] is True
+    assert "differs" in body["warnings"][0]
+    rows = {row["symbol"]: row for row in body["rows"]}
+    assert rows["000001"]["current_quantity"] == 200
+    assert rows["000001"]["advisory_current_quantity"] == 100
+    assert rows["000001"]["quantity_delta"] == 100
+    assert rows["000001"]["suggested_side"] == "buy"
+    assert rows["000002"]["quantity_delta"] == 100
+    assert rows["000002"]["estimated_delta_amount"] == 2_000.0
+    assert client.get("/api/portfolio/current").json()["positions"] == [
+        {"symbol": "000001", "name": "Stock 000001", "quantity": 200, "reference_price": 10.0, "price_date": as_of_date.isoformat(), "market_value": 2_000.0}
+    ]
+    assert client.get("/api/portfolio/history").json() == [
+        {"as_of_date": as_of_date.isoformat(), "cash": 1_000.0, "position_value": 2_000.0, "equity": 3_000.0}
+    ]
+
+
+def test_portfolio_review_requires_refresh_when_snapshot_date_differs_and_404s_for_unknown_advisory():
+    session_factory = _session_factory()
+    advisory_date = date(2026, 7, 14)
+    snapshot_date = date(2026, 7, 15)
+    _seed_close(session_factory, "000001", snapshot_date, 10.0)
+    advisory_id = _seed_advisory(session_factory, as_of_date=advisory_date, accepted={}, trade_plan=[])
+    client = _client(session_factory)
+    assert client.put(
+        "/api/portfolio/snapshot",
+        json={"as_of_date": snapshot_date.isoformat(), "cash": 1_000, "positions": [{"symbol": "000001", "quantity": 100}]},
+    ).status_code == 200
+
+    stale = client.get(f"/api/portfolio/review?advisory_id={advisory_id}")
+    assert stale.status_code == 200
+    assert stale.json()["requires_refresh"] is True
+    assert "differs" in stale.json()["warnings"][0]
+    assert client.get("/api/portfolio/review?advisory_id=999").status_code == 404
+
+
+def test_portfolio_review_is_current_only_when_snapshot_matches_advisory_positions_and_equity():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        total_equity=2_000.0,
+        accepted={"000001": 0.5},
+        trade_plan=[
+            {
+                "symbol": "000001",
+                "side": "buy",
+                "current_quantity": 100,
+                "target_quantity": 200,
+                "quantity": 100,
+                "reference_price": 10.0,
+                "estimated_amount": 1_000.0,
+            }
+        ],
+    )
+    client = _client(session_factory)
+    assert client.put(
+        "/api/portfolio/snapshot",
+        json={"as_of_date": as_of_date.isoformat(), "cash": 1_000, "positions": [{"symbol": "000001", "quantity": 100}]},
+    ).status_code == 200
+
+    response = client.get(f"/api/portfolio/review?advisory_id={advisory_id}")
+    assert response.status_code == 200
+    assert response.json()["requires_refresh"] is False
+    assert response.json()["rows"][0]["quantity_delta"] == 100
+
+
+def test_portfolio_review_rejects_corrupt_or_non_finite_persisted_advisory_data():
+    session_factory = _session_factory()
+    advisory_id = _seed_advisory(session_factory, as_of_date=date(2026, 7, 14), accepted={}, trade_plan=[])
+    session = session_factory()
+    try:
+        record = session.get(AdvisoryRun, advisory_id)
+        assert record is not None
+        record.risk_json = '{"accepted":{"000001":NaN}}'
+        session.commit()
+    finally:
+        session.close()
+
+    response = _client(session_factory).get(f"/api/portfolio/review?advisory_id={advisory_id}")
+    assert response.status_code == 409
+    assert "cannot be reviewed" in response.json()["detail"]
