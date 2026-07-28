@@ -28,6 +28,9 @@ from app.schemas.advisory import (
     AdvisoryNotificationResponse,
     AdvisoryOutcomeOut,
     AdvisoryOutcomeResponse,
+    AdvisoryDeterministicControlOut,
+    AdvisoryLlmComparisonResponse,
+    AdvisoryLlmLayerOut,
     AdvisoryAgentSnapshotOut,
     AdvisoryReplayResponse,
     AdvisoryRejectRequest,
@@ -665,6 +668,60 @@ def refresh_advisory_outcomes(
         advisory_id=record.id,
         as_of_date=record.as_of_date,
         outcomes=[_outcome_out(item) for item in sorted(updated, key=lambda value: value.horizon_trading_days)],
+    )
+
+
+@router.get("/drafts/{advisory_id}/llm-comparison", response_model=AdvisoryLlmComparisonResponse)
+def compare_llm_explanation_to_deterministic_control(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> AdvisoryLlmComparisonResponse:
+    """Make the non-causal LLM explanation layer explicit beside its deterministic control."""
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    weights = _outcome_weights(record)
+    try:
+        trade_plan = json.loads(record.trade_plan_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="Advisory trade plan snapshot is corrupt.") from exc
+    if not isinstance(trade_plan, list):
+        raise HTTPException(status_code=409, detail="Advisory trade plan snapshot is corrupt.")
+    outcomes = list(
+        session.scalars(
+            select(AdvisoryOutcome)
+            .where(AdvisoryOutcome.advisory_run_id == advisory_id)
+            .order_by(AdvisoryOutcome.horizon_trading_days)
+        )
+    )
+    summary = record.llm_summary.strip()
+    summary_fingerprint = hashlib.sha256(summary.encode("utf-8")).hexdigest() if summary else None
+    warnings = [
+        "The deterministic target weights and trade plan are the control; the LLM layer cannot alter either.",
+        "Outcome returns are shared control outcomes, not evidence that LLM prose improved returns.",
+    ]
+    if record.remote_llm_requested and not summary:
+        warnings.append("A remote LLM was requested, but no completed explanation is stored for this draft.")
+    if not record.remote_llm_requested:
+        warnings.append("No remote LLM explanation was requested for this deterministic draft.")
+    return AdvisoryLlmComparisonResponse(
+        advisory_id=record.id,
+        deterministic_control=AdvisoryDeterministicControlOut(
+            strategy_name=record.strategy_name,
+            target_weight_fingerprint=advisory_snapshot_fingerprint(record.id, "deterministic_targets", weights),
+            trade_plan_fingerprint=advisory_snapshot_fingerprint(record.id, "deterministic_trade_plan", {"items": trade_plan}),
+            outcomes=[_outcome_out(item) for item in outcomes],
+        ),
+        llm_layer=AdvisoryLlmLayerOut(
+            requested=record.remote_llm_requested,
+            summary_available=bool(summary),
+            provider=record.llm_provider,
+            model=record.llm_model,
+            summary_fingerprint=summary_fingerprint,
+        ),
+        strategy_or_execution_changed=False,
+        performance_attribution="not_applicable",
+        warnings=warnings,
     )
 
 

@@ -141,8 +141,10 @@ that is constrained to the already risk-gated trade-plan draft.
   windows require the local trading calendar, CSI 300, and full `qfq` price
   paths. Incomplete coverage remains explicitly pending; news is company-level
   observed evidence only, bounded by known-at timestamps.
-- [ ] P5-2 Compare model-assisted reports against the same deterministic
-  strategy without LLM text.
+- [x] P5-2 Compare the LLM explanation layer with its identical deterministic
+  strategy control. The interface fingerprints targets and trade plans, reuses
+  the same outcome data, and explicitly marks LLM performance attribution as
+  not applicable because prose cannot change execution.
 - [ ] P5-3 Require multi-period out-of-sample evidence before promoting any
   strategy/ML proposal to the paper portfolio.
 - [ ] P5-4 Publish a factor/strategy cemetery for failed ideas.

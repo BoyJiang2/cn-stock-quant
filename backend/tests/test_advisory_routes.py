@@ -890,6 +890,51 @@ def test_advisory_outcomes_stay_pending_when_benchmark_misses_a_calendar_date():
     assert all(item["status"] == "pending" for item in response.json()["outcomes"])
 
 
+def test_llm_comparison_keeps_the_deterministic_strategy_as_the_control():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={
+            "strategy_name": "moving_average",
+            "as_of_date": as_of_date.isoformat(),
+            "symbols": ["000001"],
+            "cash": 100_000,
+            "allow_remote_llm": True,
+        },
+    )
+    advisory_id = draft.json()["id"]
+    session = session_factory()
+    try:
+        record = session.get(AdvisoryRun, advisory_id)
+        assert record is not None
+        record.llm_provider = "test"
+        record.llm_model = "test-model"
+        record.llm_summary = "A non-executable research explanation."
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(f"/api/advisory/drafts/{advisory_id}/llm-comparison")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategy_or_execution_changed"] is False
+    assert body["performance_attribution"] == "not_applicable"
+    assert len(body["deterministic_control"]["target_weight_fingerprint"]) == 64
+    assert len(body["deterministic_control"]["trade_plan_fingerprint"]) == 64
+    assert body["llm_layer"] == {
+        "requested": True,
+        "summary_available": True,
+        "provider": "test",
+        "model": "test-model",
+        "summary_fingerprint": body["llm_layer"]["summary_fingerprint"],
+    }
+    assert len(body["llm_layer"]["summary_fingerprint"]) == 64
+
+
 def test_advisory_expires_after_a_later_local_trading_date_is_available():
     session_factory = _session_factory()
     as_of_date = date(2026, 7, 14)

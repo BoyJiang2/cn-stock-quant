@@ -256,6 +256,30 @@ class AdvisoryOutcomeResponse(BaseModel):
     outcomes: list[AdvisoryOutcomeOut] = Field(default_factory=list)
 
 
+class AdvisoryDeterministicControlOut(BaseModel):
+    strategy_name: str
+    target_weight_fingerprint: str
+    trade_plan_fingerprint: str
+    outcomes: list[AdvisoryOutcomeOut] = Field(default_factory=list)
+
+
+class AdvisoryLlmLayerOut(BaseModel):
+    requested: bool
+    summary_available: bool
+    provider: str | None = None
+    model: str | None = None
+    summary_fingerprint: str | None = None
+
+
+class AdvisoryLlmComparisonResponse(BaseModel):
+    advisory_id: int
+    deterministic_control: AdvisoryDeterministicControlOut
+    llm_layer: AdvisoryLlmLayerOut
+    strategy_or_execution_changed: bool = False
+    performance_attribution: Literal["not_applicable"]
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]
