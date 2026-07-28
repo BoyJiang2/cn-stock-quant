@@ -110,7 +110,9 @@ that is constrained to the already risk-gated trade-plan draft.
 ### P3: Multi-Agent Research Loop
 
 - [ ] P3-1 Research agent: facts from local data/news with citations.
-- [ ] P3-2 Strategy agent: compares validated factor/ML candidates.
+- [x] P3-2 Strategy agent: compares eligible rolling-OOS strategy candidates
+  using a deterministic, published score across return, drawdown, Sharpe, and
+  cost-stress Sharpe. Invalid metrics and inconsistent provenance are excluded.
 - [ ] P3-3 Critic agent: looks for stale data, contradictory news, leakage,
   concentration, and unsupported conclusions.
 - [ ] P3-4 Risk agent: produces deterministic gate results and a plain-language

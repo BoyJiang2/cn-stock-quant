@@ -1,6 +1,7 @@
 import hashlib
 import json
 from datetime import date, datetime, timedelta
+from math import isfinite
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -31,6 +32,8 @@ from app.schemas.advisory import (
     AdvisoryReviewResponse,
     ResearchAgentResponse,
     ResearchFactOut,
+    StrategyAgentResponse,
+    StrategyCandidateOut,
     AdvisoryStatusResponse,
     EligibleValidationOptionOut,
 )
@@ -95,6 +98,75 @@ def list_eligible_validations(
             )
         )
     return options
+
+
+@router.get("/strategy-candidates", response_model=StrategyAgentResponse)
+def strategy_candidates(session: Session = Depends(get_session)) -> StrategyAgentResponse:
+    """Rank only eligible rolling-OOS records with a transparent deterministic score."""
+    rows = session.execute(
+        select(BacktestWalkForwardValidation, BacktestRun)
+        .join(BacktestRun, BacktestRun.id == BacktestWalkForwardValidation.backtest_run_id)
+        .where(
+            BacktestWalkForwardValidation.status == "completed",
+            BacktestWalkForwardValidation.eligibility_status == "eligible",
+        )
+        .order_by(BacktestWalkForwardValidation.created_at.desc())
+    )
+    candidates: list[StrategyCandidateOut] = []
+    for validation, run in rows:
+        try:
+            spec = json.loads(validation.spec_json)
+            result = json.loads(validation.result_json)
+            quality = json.loads(validation.quality_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        aggregate = result.get("aggregate", {}) if isinstance(result, dict) else {}
+        stressed = result.get("cost_stress_aggregate", {}) if isinstance(result, dict) else {}
+        if not isinstance(aggregate, dict) or not isinstance(stressed, dict):
+            continue
+        annual = _finite_metric(aggregate.get("annual_return"))
+        sharpe = _finite_metric(aggregate.get("sharpe"))
+        drawdown = _finite_metric(aggregate.get("max_drawdown"))
+        stressed_sharpe = _finite_metric(stressed.get("sharpe"))
+        if None in {annual, sharpe, drawdown, stressed_sharpe}:
+            continue
+        score = annual * 100 + sharpe * 10 - abs(drawdown) * 40 + stressed_sharpe * 5
+        windows = spec.get("windows", []) if isinstance(spec, dict) else []
+        strategy_name = spec.get("strategy_name") if isinstance(spec, dict) else None
+        if strategy_name != run.strategy_name:
+            continue
+        try:
+            as_of_date = date.fromisoformat(str(windows[-1]["oos_end_date"]))
+        except (IndexError, KeyError, TypeError, ValueError):
+            continue
+        if not _candidate_metrics_are_valid(annual, sharpe, drawdown, stressed_sharpe):
+            continue
+        flags = quality.get("quality_flags", []) if isinstance(quality, dict) else []
+        rationale = [
+            f"OOS annual return {annual:.2%}; Sharpe {sharpe:.2f}; max drawdown {drawdown:.2%}.",
+            f"Cost-stressed Sharpe {stressed_sharpe:.2f}.",
+        ]
+        candidates.append(StrategyCandidateOut(
+            rank=0,
+            validation_id=validation.id,
+            backtest_run_id=run.id,
+            strategy_name=run.strategy_name,
+            as_of_date=as_of_date,
+            score=round(score, 6),
+            aggregate=_finite_metrics(aggregate),
+            cost_stress_aggregate=_finite_metrics(stressed),
+            quality_flags=[flag for flag in flags if isinstance(flag, str)] if isinstance(flags, list) else [],
+            rationale=rationale,
+        ))
+    candidates.sort(key=lambda item: (item.score, item.as_of_date, item.validation_id), reverse=True)
+    candidates = candidates[:100]
+    for rank, candidate in enumerate(candidates, start=1):
+        candidate.rank = rank
+    return StrategyAgentResponse(
+        candidates=candidates,
+        scoring_method="score = annual_return*100 + sharpe*10 - abs(max_drawdown)*40 + cost_stress_sharpe*5; eligible rolling OOS records only",
+        warnings=["This ranking is historical validation evidence, not a future-return forecast or trade instruction."],
+    )
 
 
 @router.post("/drafts", response_model=AdvisoryResponse)
@@ -391,6 +463,42 @@ def _sse(event: str, data: dict) -> str:
 
 
 _LEGACY_DRAFT_STATUSES = {"llm_complete", "llm_disabled", "streaming"}
+
+
+def _finite_metric(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if isfinite(numeric) else None
+
+
+def _finite_metrics(values: dict) -> dict[str, float]:
+    return {
+        str(key): numeric
+        for key, value in values.items()
+        if (numeric := _finite_metric(value)) is not None
+    }
+
+
+def _candidate_metrics_are_valid(
+    annual: float | None,
+    sharpe: float | None,
+    drawdown: float | None,
+    stressed_sharpe: float | None,
+) -> bool:
+    return (
+        annual is not None
+        and sharpe is not None
+        and drawdown is not None
+        and stressed_sharpe is not None
+        and -1 <= annual <= 5
+        and -10 <= sharpe <= 10
+        and -1 <= drawdown <= 0
+        and -10 <= stressed_sharpe <= 10
+    )
 
 
 def _refresh_advisory_status(session: Session, record: AdvisoryRun) -> tuple[bool, date | None]:

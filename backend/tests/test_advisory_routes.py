@@ -179,8 +179,8 @@ def _seed_walk_forward_validation(
             ),
             result_json=json.dumps(
                 {
-                    "aggregate": {"excess_return": 0.02},
-                    "cost_stress_aggregate": {"excess_return": 0.01},
+                    "aggregate": {"annual_return": 0.12, "sharpe": 1.1, "max_drawdown": -0.14, "excess_return": 0.02},
+                    "cost_stress_aggregate": {"sharpe": 0.7, "excess_return": 0.01},
                 },
                 sort_keys=True,
             ),
@@ -333,6 +333,27 @@ def test_advisory_rejects_ineligible_walk_forward_validation():
 
     assert response.status_code == 400
     assert "not eligible" in response.json()["detail"]
+
+
+def test_strategy_agent_ranks_only_eligible_validated_candidates():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    validation_id = _seed_walk_forward_validation(session_factory, as_of_date=as_of_date)
+    _seed_walk_forward_validation(
+        session_factory,
+        as_of_date=as_of_date,
+        eligibility_status="not_eligible_pit_degraded",
+        strategy_name="low_vol_defensive",
+    )
+
+    response = _client(session_factory).get("/api/advisory/strategy-candidates")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["candidates"][0]["validation_id"] == validation_id
+    assert body["candidates"][0]["rank"] == 1
+    assert body["candidates"][0]["aggregate"]["sharpe"] == 1.1
+    assert "eligible rolling OOS" in body["scoring_method"]
 
 
 def test_advisory_retains_deterministic_draft_when_remote_llm_is_not_enabled():

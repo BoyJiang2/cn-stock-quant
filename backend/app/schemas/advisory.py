@@ -172,6 +172,25 @@ class ResearchAgentResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class StrategyCandidateOut(BaseModel):
+    rank: int
+    validation_id: int
+    backtest_run_id: int
+    strategy_name: str
+    as_of_date: date
+    score: float
+    aggregate: dict[str, float] = Field(default_factory=dict)
+    cost_stress_aggregate: dict[str, float] = Field(default_factory=dict)
+    quality_flags: list[str] = Field(default_factory=list)
+    rationale: list[str] = Field(default_factory=list)
+
+
+class StrategyAgentResponse(BaseModel):
+    candidates: list[StrategyCandidateOut] = Field(default_factory=list)
+    scoring_method: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]
