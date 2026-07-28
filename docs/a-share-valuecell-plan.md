@@ -145,8 +145,9 @@ that is constrained to the already risk-gated trade-plan draft.
   strategy control. The interface fingerprints targets and trade plans, reuses
   the same outcome data, and explicitly marks LLM performance attribution as
   not applicable because prose cannot change execution.
-- [ ] P5-3 Require multi-period out-of-sample evidence before promoting any
-  strategy/ML proposal to the paper portfolio.
+- [x] P5-3 Require an explicit human review plus at least three distinct,
+  completed, eligible rolling OOS windows with matching strategy and provenance
+  before an advisory can be promoted into the local paper portfolio.
 - [ ] P5-4 Publish a factor/strategy cemetery for failed ideas.
 
 ## Provider and Secret Policy

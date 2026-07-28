@@ -75,3 +75,11 @@ class PaperPortfolioAdvisoryReviewOut(BaseModel):
     requires_refresh: bool
     rows: list[PaperPortfolioAdvisoryReviewRowOut] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+class PaperPortfolioPromotionEligibilityOut(BaseModel):
+    advisory_id: int
+    eligible: bool
+    validation_id: int | None = None
+    oos_window_count: int = 0
+    reasons: list[str] = Field(default_factory=list)

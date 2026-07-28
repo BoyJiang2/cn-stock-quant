@@ -1,13 +1,14 @@
 import json
+from datetime import date, timedelta
 from math import isfinite
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.data.repository import MarketDataRepository
-from app.models.entities import AdvisoryRun, PaperPortfolio, PaperPortfolioPosition, PaperPortfolioValuation, Stock
+from app.models.entities import AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar, PaperPortfolio, PaperPortfolioPosition, PaperPortfolioValuation, Stock
 from app.schemas.portfolio import (
     PaperPortfolioAdvisoryReviewOut,
     PaperPortfolioAdvisoryReviewRowOut,
@@ -16,6 +17,7 @@ from app.schemas.portfolio import (
     PaperPortfolioSnapshotIn,
     PaperPortfolioStateOut,
     PaperPortfolioValuationOut,
+    PaperPortfolioPromotionEligibilityOut,
 )
 
 router = APIRouter()
@@ -187,6 +189,74 @@ def portfolio_advisory_review(
     )
 
 
+@router.get("/promotion-eligibility", response_model=PaperPortfolioPromotionEligibilityOut)
+def promotion_eligibility(
+    advisory_id: int = Query(ge=1),
+    session: Session = Depends(get_session),
+) -> PaperPortfolioPromotionEligibilityOut:
+    advisory = session.get(AdvisoryRun, advisory_id)
+    if advisory is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    return _promotion_eligibility(session, advisory)
+
+
+@router.post("/promote-advisory/{advisory_id}", response_model=PaperPortfolioStateOut)
+def promote_advisory_to_paper_portfolio(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> PaperPortfolioStateOut:
+    """Apply an explicitly reviewed, multi-window OOS validated advisory to the local paper portfolio only."""
+    advisory = session.get(AdvisoryRun, advisory_id)
+    if advisory is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    eligibility = _promotion_eligibility(session, advisory)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=409, detail="Advisory cannot be promoted: " + " ".join(eligibility.reasons))
+    try:
+        weights = _accepted_weights(advisory.risk_json)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=f"Advisory draft cannot be promoted: {exc}") from exc
+    if sum(weights.values()) > 1 + 1e-9:
+        raise HTTPException(status_code=409, detail="Advisory cannot be promoted: accepted target weights exceed total capital.")
+    total_equity = _finite_positive(advisory.total_equity)
+    if total_equity is None:
+        raise HTTPException(status_code=409, detail="Advisory cannot be promoted: total equity is not a finite positive value.")
+    repository = MarketDataRepository(session)
+    symbols = sorted(weights)
+    bars = repository.daily_bars(symbols, advisory.as_of_date, advisory.as_of_date) if symbols else None
+    prices = {row.symbol: float(row.close) for row in bars.itertuples() if float(row.close) > 0} if bars is not None else {}
+    missing = sorted(set(symbols) - set(prices))
+    if missing:
+        raise HTTPException(status_code=409, detail="Advisory cannot be promoted; local close is missing for: " + ", ".join(missing))
+    positions = []
+    position_value = 0.0
+    for symbol in symbols:
+        quantity = int((total_equity * weights[symbol] / prices[symbol]) // 100 * 100)
+        if quantity > 0:
+            positions.append({"symbol": symbol, "quantity": quantity})
+            position_value += quantity * prices[symbol]
+    desired_quantities = {item["symbol"]: item["quantity"] for item in positions}
+    desired_cash = round(total_equity - position_value, 2)
+    existing_portfolio = session.scalar(select(PaperPortfolio).where(PaperPortfolio.name == _DEFAULT_PORTFOLIO_NAME))
+    if existing_portfolio is not None and existing_portfolio.as_of_date == advisory.as_of_date:
+        state = _state_out(session, existing_portfolio)
+        existing_quantities = {item.symbol: item.quantity for item in state.positions}
+        if existing_quantities == desired_quantities and abs(state.cash - desired_cash) <= 0.01:
+            return state
+        raise HTTPException(
+            status_code=409,
+            detail="Paper portfolio already has a different snapshot on this advisory date; promotion will not overwrite it.",
+        )
+    return save_portfolio_snapshot(
+        PaperPortfolioSnapshotIn(
+            as_of_date=advisory.as_of_date,
+            cash=desired_cash,
+            positions=positions,
+        ),
+        session,
+    )
+
+
 @router.put("/snapshot", response_model=PaperPortfolioStateOut)
 def save_portfolio_snapshot(
     payload: PaperPortfolioSnapshotIn,
@@ -338,6 +408,16 @@ def _number(value: object) -> float | None:
     return parsed if isfinite(parsed) and parsed >= 0 else None
 
 
+def _finite_positive(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return parsed if isfinite(parsed) and parsed > 0 else None
+
+
 def _accepted_weights(value: str) -> dict[str, float]:
     accepted = _json_object(value, "risk_json").get("accepted")
     if not isinstance(accepted, dict):
@@ -379,3 +459,113 @@ def _advisory_positions(value: str) -> dict[str, int]:
             raise ValueError("request_json.positions contains an invalid position")
         normalized[symbol] = parsed
     return normalized
+
+
+def _promotion_eligibility(session: Session, advisory: AdvisoryRun) -> PaperPortfolioPromotionEligibilityOut:
+    reasons: list[str] = []
+    validation_id: int | None = None
+    window_count = 0
+    if advisory.status != "reviewed" or advisory.reviewed_at is None:
+        reasons.append("Advisory must be explicitly reviewed before paper promotion.")
+    if _advisory_is_expired(session, advisory):
+        reasons.append("Advisory has expired because newer local bars are available after its execution window.")
+    try:
+        risk = _json_object(advisory.risk_json, "risk_json")
+        evidence = risk.get("evidence")
+        validation_evidence = evidence.get("validation") if isinstance(evidence, dict) else None
+    except ValueError:
+        validation_evidence = None
+        reasons.append("Advisory risk evidence is corrupt.")
+    if not isinstance(validation_evidence, dict) or isinstance(validation_evidence.get("validation_id"), bool):
+        reasons.append("Advisory has no attached rolling OOS validation evidence.")
+        return PaperPortfolioPromotionEligibilityOut(
+            advisory_id=advisory.id,
+            eligible=False,
+            reasons=reasons,
+        )
+    raw_validation_id = validation_evidence.get("validation_id")
+    if not isinstance(raw_validation_id, int) or raw_validation_id < 1:
+        reasons.append("Advisory validation evidence has an invalid validation ID.")
+        return PaperPortfolioPromotionEligibilityOut(advisory_id=advisory.id, eligible=False, reasons=reasons)
+    validation_id = raw_validation_id
+    validation = session.get(BacktestWalkForwardValidation, validation_id)
+    if validation is None:
+        reasons.append("Attached rolling OOS validation no longer exists.")
+        return PaperPortfolioPromotionEligibilityOut(advisory_id=advisory.id, eligible=False, validation_id=validation_id, reasons=reasons)
+    run = session.get(BacktestRun, validation.backtest_run_id)
+    provenance = session.scalar(select(BacktestRunProvenance).where(BacktestRunProvenance.run_id == validation.backtest_run_id))
+    if validation.status != "completed" or validation.eligibility_status != "eligible":
+        reasons.append("Attached rolling OOS validation is not completed and eligible.")
+    if run is None or provenance is None:
+        reasons.append("Attached rolling OOS validation has incomplete source provenance.")
+        return PaperPortfolioPromotionEligibilityOut(advisory_id=advisory.id, eligible=False, validation_id=validation_id, reasons=reasons)
+    try:
+        spec = _json_object(validation.spec_json, "validation spec_json")
+        result = _json_object(validation.result_json, "validation result_json")
+        windows = spec.get("windows")
+        if not isinstance(windows, list):
+            raise ValueError("windows must be a list")
+        window_ranges = [
+            (date.fromisoformat(str(item["oos_start_date"])), date.fromisoformat(str(item["oos_end_date"])))
+            for item in windows
+            if isinstance(item, dict)
+        ]
+        if len(window_ranges) != len(windows) or any(start > end for start, end in window_ranges):
+            raise ValueError("window range is invalid")
+        ordered_ranges = sorted(window_ranges)
+        if any(previous_end >= current_start for (_, previous_end), (current_start, _) in zip(ordered_ranges, ordered_ranges[1:])):
+            raise ValueError("windows overlap")
+        window_dates = [end for _, end in window_ranges]
+        window_results = result.get("window_results")
+        if not isinstance(window_results, list) or len(window_results) != len(windows) or not all(isinstance(item, dict) for item in window_results):
+            raise ValueError("window results are invalid")
+    except (KeyError, TypeError, ValueError):
+        reasons.append("Attached rolling OOS validation has invalid window metadata.")
+        return PaperPortfolioPromotionEligibilityOut(advisory_id=advisory.id, eligible=False, validation_id=validation_id, reasons=reasons)
+    window_count = len(set(window_dates))
+    if window_count < 3:
+        reasons.append("At least three distinct rolling OOS windows are required for paper promotion.")
+    if max(window_dates, default=advisory.as_of_date) != advisory.as_of_date:
+        reasons.append("The latest rolling OOS window must end on the advisory as-of date.")
+    if (
+        run.strategy_name != advisory.strategy_name
+        or spec.get("strategy_name") != advisory.strategy_name
+        or spec.get("source_backtest_run_id") != run.id
+        or spec.get("source_provenance_fingerprint") != provenance.fingerprint
+        or validation.source_provenance_fingerprint != provenance.fingerprint
+        or validation_evidence.get("backtest_run_id") != run.id
+        or validation_evidence.get("fingerprint") != validation.fingerprint
+        or validation_evidence.get("source_as_of_date") != advisory.as_of_date.isoformat()
+    ):
+        reasons.append("Rolling OOS validation provenance does not match this advisory.")
+    return PaperPortfolioPromotionEligibilityOut(
+        advisory_id=advisory.id,
+        eligible=not reasons,
+        validation_id=validation_id,
+        oos_window_count=window_count,
+        reasons=reasons,
+    )
+
+
+def _advisory_is_expired(session: Session, advisory: AdvisoryRun) -> bool:
+    try:
+        request = _json_object(advisory.request_json, "request_json")
+        symbols = sorted({symbol for symbol in request.get("symbols", []) if isinstance(symbol, str) and symbol})
+    except ValueError:
+        return False
+    if not symbols:
+        return False
+    repository = MarketDataRepository(session)
+    execution_dates = repository.trading_dates(
+        advisory.as_of_date + timedelta(days=1),
+        advisory.as_of_date + timedelta(days=14),
+    )
+    if not execution_dates:
+        return False
+    latest_rows = session.execute(
+        select(DailyBar.symbol, func.max(DailyBar.trade_date))
+        .where(DailyBar.symbol.in_(symbols))
+        .group_by(DailyBar.symbol)
+    )
+    latest_dates = {symbol: latest for symbol, latest in latest_rows if latest is not None}
+    return len(latest_dates) == len(symbols) and min(latest_dates.values()) > execution_dates[0]

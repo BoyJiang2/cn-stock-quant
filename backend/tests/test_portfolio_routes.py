@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import AdvisoryRun, Base, DailyBar, Stock
+from app.models.entities import AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, Base, DailyBar, Stock, TradingCalendar
 
 
 def _session_factory() -> sessionmaker:
@@ -66,13 +66,14 @@ def _seed_advisory(
     trade_plan: list[dict],
     accepted: dict[str, float],
     total_equity: float = 10_000.0,
+    status: str = "draft",
 ) -> int:
     session = session_factory()
     try:
         record = AdvisoryRun(
             as_of_date=as_of_date,
             strategy_name="moving_average",
-            status="draft",
+            status=status,
             total_equity=total_equity,
             request_hash="a" * 64,
             request_json=json.dumps(
@@ -88,10 +89,86 @@ def _seed_advisory(
             trade_plan_json=json.dumps(trade_plan),
             remote_llm_requested=False,
             llm_summary="",
+            reviewed_at=datetime.utcnow() if status == "reviewed" else None,
         )
         session.add(record)
         session.commit()
         return record.id
+    finally:
+        session.close()
+
+
+def _attach_multi_window_validation(
+    session_factory: sessionmaker,
+    *,
+    advisory_id: int,
+    as_of_date: date,
+    window_count: int = 3,
+) -> int:
+    session = session_factory()
+    try:
+        advisory = session.get(AdvisoryRun, advisory_id)
+        assert advisory is not None
+        run = BacktestRun(
+            strategy_name=advisory.strategy_name,
+            start_date=as_of_date.replace(year=as_of_date.year - 1),
+            end_date=as_of_date,
+            initial_cash=100_000,
+            final_equity=110_000,
+            total_return=0.1,
+            annual_return=0.1,
+            max_drawdown=-0.1,
+            sharpe=1.0,
+        )
+        session.add(run)
+        session.flush()
+        provenance = BacktestRunProvenance(
+            run_id=run.id,
+            status="recorded_unvalidated",
+            spec_json="{}",
+            universe_json="{}",
+            result_json="{}",
+            fingerprint="promotion-source",
+        )
+        session.add(provenance)
+        window_dates = [as_of_date - timedelta(days=30 * offset) for offset in range(window_count - 1, -1, -1)]
+        validation = BacktestWalkForwardValidation(
+            backtest_run_id=run.id,
+            status="completed",
+            eligibility_status="eligible",
+            spec_json=json.dumps(
+                {
+                    "strategy_name": advisory.strategy_name,
+                    "source_backtest_run_id": run.id,
+                    "source_provenance_fingerprint": provenance.fingerprint,
+                    "windows": [
+                        {
+                            "oos_start_date": (item - timedelta(days=10)).isoformat(),
+                            "oos_end_date": item.isoformat(),
+                        }
+                        for item in window_dates
+                    ],
+                }
+            ),
+            result_json=json.dumps({"window_results": [{} for _ in window_dates]}),
+            quality_json="{}",
+            source_provenance_fingerprint=provenance.fingerprint,
+            fingerprint="promotion-validation",
+        )
+        session.add(validation)
+        session.flush()
+        risk = json.loads(advisory.risk_json)
+        risk["evidence"] = {
+            "validation": {
+                "validation_id": validation.id,
+                "backtest_run_id": run.id,
+                "source_as_of_date": as_of_date.isoformat(),
+                "fingerprint": validation.fingerprint,
+            }
+        }
+        advisory.risk_json = json.dumps(risk)
+        session.commit()
+        return validation.id
     finally:
         session.close()
 
@@ -340,3 +417,157 @@ def test_portfolio_review_rejects_corrupt_or_non_finite_persisted_advisory_data(
     response = _client(session_factory).get(f"/api/portfolio/review?advisory_id={advisory_id}")
     assert response.status_code == 409
     assert "cannot be reviewed" in response.json()["detail"]
+
+
+def test_multi_window_oos_validation_is_required_before_paper_promotion():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        accepted={"000001": 0.4},
+        trade_plan=[],
+        status="reviewed",
+    )
+    _attach_multi_window_validation(session_factory, advisory_id=advisory_id, as_of_date=as_of_date, window_count=3)
+    client = _client(session_factory)
+
+    eligibility = client.get(f"/api/portfolio/promotion-eligibility?advisory_id={advisory_id}")
+    promoted = client.post(f"/api/portfolio/promote-advisory/{advisory_id}")
+
+    assert eligibility.status_code == 200
+    assert eligibility.json()["eligible"] is True
+    assert eligibility.json()["oos_window_count"] == 3
+    assert promoted.status_code == 200, promoted.text
+    assert promoted.json()["cash"] == 6_000.0
+    assert promoted.json()["positions"][0]["symbol"] == "000001"
+    assert promoted.json()["positions"][0]["quantity"] == 400
+
+
+def test_paper_promotion_rejects_single_window_or_unreviewed_advisories():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        accepted={"000001": 0.4},
+        trade_plan=[],
+        status="reviewed",
+    )
+    _attach_multi_window_validation(session_factory, advisory_id=advisory_id, as_of_date=as_of_date, window_count=1)
+    client = _client(session_factory)
+
+    response = client.post(f"/api/portfolio/promote-advisory/{advisory_id}")
+
+    assert response.status_code == 409
+    assert "three distinct rolling OOS windows" in response.json()["detail"]
+    assert client.get("/api/portfolio/current").json()["positions"] == []
+
+
+def test_paper_promotion_rejects_overallocated_persisted_target_weights():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    _seed_close(session_factory, "000002", as_of_date, 10.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        accepted={"000001": 0.7, "000002": 0.7},
+        trade_plan=[],
+        status="reviewed",
+    )
+    _attach_multi_window_validation(session_factory, advisory_id=advisory_id, as_of_date=as_of_date, window_count=3)
+
+    response = _client(session_factory).post(f"/api/portfolio/promote-advisory/{advisory_id}")
+
+    assert response.status_code == 409
+    assert "exceed total capital" in response.json()["detail"]
+
+
+def test_paper_promotion_rejects_reviewed_advisory_after_its_execution_window_expires():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        accepted={"000001": 0.4},
+        trade_plan=[],
+        status="reviewed",
+    )
+    _attach_multi_window_validation(session_factory, advisory_id=advisory_id, as_of_date=as_of_date, window_count=3)
+    session = session_factory()
+    try:
+        advisory = session.get(AdvisoryRun, advisory_id)
+        assert advisory is not None
+        advisory.request_json = json.dumps({"symbols": ["000001"], "positions": {}})
+        for offset in range(1, 4):
+            session.add(TradingCalendar(trade_date=as_of_date + timedelta(days=offset), is_open=True))
+            session.add(
+                DailyBar(
+                    symbol="000001",
+                    trade_date=as_of_date + timedelta(days=offset),
+                    open=10.0,
+                    high=10.0,
+                    low=10.0,
+                    close=10.0,
+                    volume=1_000.0,
+                    amount=10_000.0,
+                    adj="qfq",
+                )
+            )
+        session.commit()
+    finally:
+        session.close()
+
+    response = _client(session_factory).post(f"/api/portfolio/promote-advisory/{advisory_id}")
+
+    assert response.status_code == 409
+    assert "expired" in response.json()["detail"]
+
+
+def test_paper_promotion_does_not_overwrite_a_different_same_day_snapshot():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        accepted={"000001": 0.4},
+        trade_plan=[],
+        status="reviewed",
+    )
+    _attach_multi_window_validation(session_factory, advisory_id=advisory_id, as_of_date=as_of_date, window_count=3)
+    client = _client(session_factory)
+    assert client.put(
+        "/api/portfolio/snapshot",
+        json={"as_of_date": as_of_date.isoformat(), "cash": 9_000, "positions": [{"symbol": "000001", "quantity": 100}]},
+    ).status_code == 200
+
+    response = client.post(f"/api/portfolio/promote-advisory/{advisory_id}")
+
+    assert response.status_code == 409
+    assert "will not overwrite" in response.json()["detail"]
+    assert client.get("/api/portfolio/current").json()["cash"] == 9_000.0
+
+
+def test_paper_promotion_rejects_non_positive_persisted_total_equity():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_close(session_factory, "000001", as_of_date, 10.0)
+    advisory_id = _seed_advisory(
+        session_factory,
+        as_of_date=as_of_date,
+        accepted={"000001": 0.4},
+        trade_plan=[],
+        status="reviewed",
+        total_equity=-1.0,
+    )
+    _attach_multi_window_validation(session_factory, advisory_id=advisory_id, as_of_date=as_of_date, window_count=3)
+
+    response = _client(session_factory).post(f"/api/portfolio/promote-advisory/{advisory_id}")
+
+    assert response.status_code == 409
+    assert "finite positive" in response.json()["detail"]
