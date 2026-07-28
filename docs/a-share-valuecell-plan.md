@@ -119,7 +119,11 @@ that is constrained to the already risk-gated trade-plan draft.
   ready for human review; they never create an execution path.
 - [x] P3-4 Risk agent: exposes the persisted deterministic gate result, risk
   caps, retained exposure, and plain-language per-symbol rejection reasons.
-- [ ] P3-5 Store each agent's evidence and final synthesis for replay.
+- [x] P3-5 Store immutable creation-time research, strategy, critic, risk, and
+  synthesis snapshots with ID- and agent-bound SHA-256 fingerprints; replay
+  rejects incomplete, tampered, or cross-draft data. It intentionally does not
+  treat later LLM prose as evidence, and legacy drafts are explicitly marked
+  unavailable rather than reconstructed from new data.
 
 ### P4: Notifications and Daily Workflow
 

@@ -222,6 +222,20 @@ class RiskAgentResponse(BaseModel):
     explanation: list[str] = Field(default_factory=list)
 
 
+class AdvisoryAgentSnapshotOut(BaseModel):
+    agent_name: Literal["research", "strategy", "critic", "risk", "synthesis"]
+    payload: dict[str, Any]
+    fingerprint: str
+    created_at: datetime
+
+
+class AdvisoryReplayResponse(BaseModel):
+    advisory_id: int
+    as_of_date: date
+    replay_fingerprint: str
+    snapshots: list[AdvisoryAgentSnapshotOut] = Field(default_factory=list)
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]

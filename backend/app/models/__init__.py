@@ -1,4 +1,5 @@
 from app.models.entities import (
+    AdvisoryAgentSnapshot,
     AdvisoryRun,
     AdvisoryNotificationDelivery,
     BacktestEquity,
@@ -28,6 +29,7 @@ from app.models.pit import (
 )
 
 __all__ = [
+    "AdvisoryAgentSnapshot",
     "AdvisoryRun",
     "AdvisoryNotificationDelivery",
     "BacktestEquity",

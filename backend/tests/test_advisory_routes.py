@@ -12,6 +12,7 @@ from app.core.config import settings as app_settings
 from app.ai_advisory.service import create_advisory, stream_advisory_summary
 from app.main import create_app
 from app.models.entities import (
+    AdvisoryAgentSnapshot,
     AdvisoryNotificationDelivery,
     AdvisoryRun,
     BacktestRun,
@@ -696,6 +697,63 @@ def test_risk_agent_explains_persisted_risk_gate_decision():
     assert body["max_total_weight"] == 0.8
     assert body["max_positions"] == 20
     assert body["rejections"] == [{"symbol": "000002", "reason": "maximum positions reached"}]
+
+
+def test_advisory_replay_returns_immutable_fingerprinted_agent_snapshots():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={"strategy_name": "moving_average", "as_of_date": as_of_date.isoformat(), "symbols": ["000001"], "cash": 100_000},
+    )
+
+    response = client.get(f"/api/advisory/drafts/{draft.json()['id']}/replay")
+
+    assert response.status_code == 200
+    body = response.json()
+    snapshots = {item["agent_name"]: item for item in body["snapshots"]}
+    assert set(snapshots) == {"research", "strategy", "critic", "risk", "synthesis"}
+    assert all(len(item["fingerprint"]) == 64 for item in snapshots.values())
+    assert snapshots["strategy"]["payload"]["strategy_name"] == "moving_average"
+    assert snapshots["synthesis"]["payload"]["research_only"] is True
+    assert len(body["replay_fingerprint"]) == 64
+
+    session = session_factory()
+    try:
+        snapshot = session.query(AdvisoryAgentSnapshot).filter_by(
+            advisory_run_id=draft.json()["id"], agent_name="risk"
+        ).one()
+        snapshot.payload_json = "{}"
+        session.commit()
+    finally:
+        session.close()
+    assert client.get(f"/api/advisory/drafts/{draft.json()['id']}/replay").status_code == 409
+
+
+def test_advisory_replay_rejects_snapshots_copied_from_another_draft():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    payload = {"strategy_name": "moving_average", "as_of_date": as_of_date.isoformat(), "symbols": ["000001"], "cash": 100_000}
+    first_id = client.post("/api/advisory/drafts", json=payload).json()["id"]
+    second_id = client.post("/api/advisory/drafts", json=payload).json()["id"]
+    session = session_factory()
+    try:
+        source = {
+            item.agent_name: item
+            for item in session.query(AdvisoryAgentSnapshot).filter_by(advisory_run_id=second_id)
+        }
+        for item in session.query(AdvisoryAgentSnapshot).filter_by(advisory_run_id=first_id):
+            item.payload_json = source[item.agent_name].payload_json
+            item.fingerprint = source[item.agent_name].fingerprint
+        session.commit()
+    finally:
+        session.close()
+
+    assert client.get(f"/api/advisory/drafts/{first_id}/replay").status_code == 409
 
 
 def test_advisory_expires_after_a_later_local_trading_date_is_available():

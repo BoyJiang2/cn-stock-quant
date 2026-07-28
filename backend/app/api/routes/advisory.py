@@ -15,16 +15,19 @@ from app.ai_advisory.providers import (
 )
 from app.ai_advisory.service import (
     AdvisoryInputError,
+    advisory_snapshot_fingerprint,
     create_advisory,
     stream_advisory_summary,
 )
 from app.core.config import settings
 from app.core.database import SessionLocal, get_session
 from app.data.repository import MarketDataRepository
-from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar
+from app.models.entities import AdvisoryAgentSnapshot, AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar
 from app.notifications import NotificationDeliveryError, WeComGroupWebhookSender
 from app.schemas.advisory import (
     AdvisoryNotificationResponse,
+    AdvisoryAgentSnapshotOut,
+    AdvisoryReplayResponse,
     AdvisoryRejectRequest,
     AdvisoryRejectResponse,
     AdvisoryRequest,
@@ -473,6 +476,60 @@ def risk_decision_explanation(
         max_positions=max_positions,
         rejections=[RiskRejectionOut(symbol=symbol, reason=reason) for symbol, reason in sorted(rejected.items())],
         explanation=explanation,
+    )
+
+
+@router.get("/drafts/{advisory_id}/replay", response_model=AdvisoryReplayResponse)
+def replay_advisory_evidence(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> AdvisoryReplayResponse:
+    """Return the immutable, fingerprint-verified agent evidence captured with a draft."""
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    records = list(
+        session.scalars(
+            select(AdvisoryAgentSnapshot)
+            .where(AdvisoryAgentSnapshot.advisory_run_id == advisory_id)
+            .order_by(AdvisoryAgentSnapshot.agent_name)
+        )
+    )
+    expected_agents = {"research", "strategy", "critic", "risk", "synthesis"}
+    if not records:
+        raise HTTPException(
+            status_code=409,
+            detail="Advisory draft predates agent snapshots; create a new draft to obtain replay evidence.",
+        )
+    if len(records) != len(expected_agents) or {item.agent_name for item in records} != expected_agents:
+        raise HTTPException(status_code=409, detail="Advisory agent replay snapshot is incomplete.")
+    snapshots: list[AdvisoryAgentSnapshotOut] = []
+    fingerprints: dict[str, str] = {}
+    for item in records:
+        try:
+            payload = json.loads(item.payload_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=409, detail="Advisory agent replay snapshot is corrupt.") from exc
+        if not isinstance(payload, dict) or item.fingerprint != advisory_snapshot_fingerprint(advisory_id, item.agent_name, payload):
+            raise HTTPException(status_code=409, detail="Advisory agent replay fingerprint does not match.")
+        fingerprints[item.agent_name] = item.fingerprint
+        snapshots.append(
+            AdvisoryAgentSnapshotOut(
+                agent_name=item.agent_name,
+                payload=payload,
+                fingerprint=item.fingerprint,
+                created_at=item.created_at,
+            )
+        )
+    synthesis = next(item.payload for item in snapshots if item.agent_name == "synthesis")
+    source_fingerprints = {name: fingerprint for name, fingerprint in fingerprints.items() if name != "synthesis"}
+    if synthesis.get("agent_fingerprints") != source_fingerprints:
+        raise HTTPException(status_code=409, detail="Advisory synthesis does not match its agent snapshots.")
+    return AdvisoryReplayResponse(
+        advisory_id=record.id,
+        as_of_date=record.as_of_date,
+        replay_fingerprint=advisory_snapshot_fingerprint(record.id, "replay", {"agents": fingerprints}),
+        snapshots=snapshots,
     )
 
 

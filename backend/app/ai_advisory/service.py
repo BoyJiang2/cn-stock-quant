@@ -12,7 +12,7 @@ from app.ai_advisory.providers import TextStreamingProvider
 from app.ai_research.market_regime import MarketRegimeAnalyzer
 from app.data.repository import MarketDataRepository
 from app.factors import FACTOR_DIRECTIONS, FactorLab, FactorSpec
-from app.models.entities import AdvisoryRun, BacktestRun, BacktestWalkForwardValidation
+from app.models.entities import AdvisoryAgentSnapshot, AdvisoryRun, BacktestRun, BacktestWalkForwardValidation
 from app.portfolio.trade_plan import build_trade_plan
 from app.risk.rules import RiskConfig, RiskEngine
 from app.schemas.advisory import (
@@ -33,6 +33,80 @@ from app.strategy.registry import get_strategy
 
 class AdvisoryInputError(ValueError):
     """Raised when a deterministic advisory snapshot cannot be constructed."""
+
+
+def advisory_snapshot_fingerprint(advisory_run_id: int, agent_name: str, payload: dict) -> str:
+    serialized = json.dumps(
+        {"advisory_run_id": advisory_run_id, "agent_name": agent_name, "payload": payload},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _persist_agent_snapshots(
+    session: Session,
+    *,
+    advisory_run_id: int,
+    as_of_date: date,
+    strategy_name: str,
+    total_equity: float,
+    strategy_parameters: dict,
+    evidence: dict,
+    risk_payload: dict,
+    constraints: dict,
+    warnings: list[str],
+) -> None:
+    """Persist immutable inputs for every deterministic advisory role at draft creation."""
+    base = {"version": 1, "as_of_date": as_of_date.isoformat()}
+    snapshots = {
+        "research": {**base, "evidence": evidence},
+        "strategy": {
+            **base,
+            "strategy_name": strategy_name,
+            "strategy_parameters": strategy_parameters,
+            "validation": evidence["validation"],
+        },
+        "critic": {
+            **base,
+            "market": evidence["market"],
+            "news": evidence["news"],
+            "validation": evidence["validation"],
+            "accepted_target_weights": risk_payload["accepted"],
+        },
+        "risk": {
+            **base,
+            "raw_target_weights": risk_payload["raw"],
+            "accepted_target_weights": risk_payload["accepted"],
+            "rejected_target_weights": risk_payload["rejected"],
+            "constraints": constraints,
+        },
+    }
+    agent_fingerprints = {
+        agent_name: advisory_snapshot_fingerprint(advisory_run_id, agent_name, snapshot)
+        for agent_name, snapshot in snapshots.items()
+    }
+    snapshots["synthesis"] = {
+        **base,
+        "phase": "draft_creation",
+        "status": "draft",
+        "strategy_name": strategy_name,
+        "total_equity": total_equity,
+        "research_only": True,
+        "remote_llm_summary_included": False,
+        "agent_fingerprints": agent_fingerprints,
+        "warnings": warnings,
+    }
+    for agent_name, snapshot in snapshots.items():
+        session.add(
+            AdvisoryAgentSnapshot(
+                advisory_run_id=advisory_run_id,
+                agent_name=agent_name,
+                payload_json=json.dumps(snapshot, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+                fingerprint=advisory_snapshot_fingerprint(advisory_run_id, agent_name, snapshot),
+            )
+        )
 
 
 def create_advisory(
@@ -136,6 +210,18 @@ def create_advisory(
             "Remote LLM was requested but is not enabled and configured; the deterministic draft was retained."
         )
 
+    evidence_payload = {
+        "market": market_evidence.model_dump(mode="json"),
+        "news": news_evidence.model_dump(mode="json"),
+        "factors": factor_evidence.model_dump(mode="json"),
+        "validation": validation_evidence.model_dump(mode="json") if validation_evidence else None,
+    }
+    risk_payload = {
+        "raw": normalized_weights,
+        "accepted": risk.accepted,
+        "rejected": risk.rejected,
+        "evidence": evidence_payload,
+    }
     record = AdvisoryRun(
         as_of_date=payload.as_of_date,
         strategy_name=strategy.name,
@@ -143,21 +229,7 @@ def create_advisory(
         total_equity=total_equity,
         request_hash=hashlib.sha256(request_json.encode("utf-8")).hexdigest(),
         request_json=request_json,
-        risk_json=json.dumps(
-            {
-                "raw": normalized_weights,
-                "accepted": risk.accepted,
-                "rejected": risk.rejected,
-                "evidence": {
-                    "market": market_evidence.model_dump(mode="json"),
-                    "news": news_evidence.model_dump(mode="json"),
-                    "factors": factor_evidence.model_dump(mode="json"),
-                    "validation": validation_evidence.model_dump(mode="json") if validation_evidence else None,
-                },
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-        ),
+        risk_json=json.dumps(risk_payload, ensure_ascii=True, sort_keys=True),
         trade_plan_json=json.dumps([item.__dict__ for item in plan], ensure_ascii=True),
         llm_provider="openai_responses" if payload.allow_remote_llm and remote_llm_available else None,
         llm_model=None,
@@ -166,6 +238,23 @@ def create_advisory(
         created_at=datetime.utcnow(),
     )
     session.add(record)
+    session.flush()
+    _persist_agent_snapshots(
+        session,
+        advisory_run_id=record.id,
+        as_of_date=payload.as_of_date,
+        strategy_name=strategy.name,
+        total_equity=total_equity,
+        strategy_parameters=payload.strategy_parameters,
+        evidence=evidence_payload,
+        risk_payload=risk_payload,
+        constraints={
+            "max_symbol_weight": payload.max_symbol_weight,
+            "max_total_weight": payload.max_total_weight,
+            "max_positions": payload.max_positions,
+        },
+        warnings=warnings,
+    )
     session.commit()
     session.refresh(record)
     return AdvisoryResponse(
