@@ -191,6 +191,20 @@ class StrategyAgentResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CriticFindingOut(BaseModel):
+    severity: Literal["warning", "blocker"]
+    code: str
+    message: str
+    citation: str
+
+
+class CriticAgentResponse(BaseModel):
+    advisory_id: int
+    as_of_date: date
+    findings: list[CriticFindingOut] = Field(default_factory=list)
+    approved_for_human_review: bool
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]

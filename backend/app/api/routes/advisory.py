@@ -21,7 +21,7 @@ from app.ai_advisory.service import (
 from app.core.config import settings
 from app.core.database import SessionLocal, get_session
 from app.data.repository import MarketDataRepository
-from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestWalkForwardValidation, DailyBar
+from app.models.entities import AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar
 from app.notifications import NotificationDeliveryError, WeComGroupWebhookSender
 from app.schemas.advisory import (
     AdvisoryNotificationResponse,
@@ -30,6 +30,8 @@ from app.schemas.advisory import (
     AdvisoryRequest,
     AdvisoryResponse,
     AdvisoryReviewResponse,
+    CriticAgentResponse,
+    CriticFindingOut,
     ResearchAgentResponse,
     ResearchFactOut,
     StrategyAgentResponse,
@@ -104,8 +106,9 @@ def list_eligible_validations(
 def strategy_candidates(session: Session = Depends(get_session)) -> StrategyAgentResponse:
     """Rank only eligible rolling-OOS records with a transparent deterministic score."""
     rows = session.execute(
-        select(BacktestWalkForwardValidation, BacktestRun)
+        select(BacktestWalkForwardValidation, BacktestRun, BacktestRunProvenance)
         .join(BacktestRun, BacktestRun.id == BacktestWalkForwardValidation.backtest_run_id)
+        .join(BacktestRunProvenance, BacktestRunProvenance.run_id == BacktestRun.id)
         .where(
             BacktestWalkForwardValidation.status == "completed",
             BacktestWalkForwardValidation.eligibility_status == "eligible",
@@ -113,12 +116,14 @@ def strategy_candidates(session: Session = Depends(get_session)) -> StrategyAgen
         .order_by(BacktestWalkForwardValidation.created_at.desc())
     )
     candidates: list[StrategyCandidateOut] = []
-    for validation, run in rows:
+    for validation, run, provenance in rows:
         try:
             spec = json.loads(validation.spec_json)
             result = json.loads(validation.result_json)
             quality = json.loads(validation.quality_json)
         except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(spec, dict) or not isinstance(result, dict) or not isinstance(quality, dict):
             continue
         aggregate = result.get("aggregate", {}) if isinstance(result, dict) else {}
         stressed = result.get("cost_stress_aggregate", {}) if isinstance(result, dict) else {}
@@ -131,9 +136,14 @@ def strategy_candidates(session: Session = Depends(get_session)) -> StrategyAgen
         if None in {annual, sharpe, drawdown, stressed_sharpe}:
             continue
         score = annual * 100 + sharpe * 10 - abs(drawdown) * 40 + stressed_sharpe * 5
-        windows = spec.get("windows", []) if isinstance(spec, dict) else []
-        strategy_name = spec.get("strategy_name") if isinstance(spec, dict) else None
-        if strategy_name != run.strategy_name:
+        windows = spec.get("windows", [])
+        strategy_name = spec.get("strategy_name")
+        if (
+            strategy_name != run.strategy_name
+            or spec.get("source_backtest_run_id") != run.id
+            or spec.get("source_provenance_fingerprint") != provenance.fingerprint
+            or validation.source_provenance_fingerprint != provenance.fingerprint
+        ):
             continue
         try:
             as_of_date = date.fromisoformat(str(windows[-1]["oos_end_date"]))
@@ -192,7 +202,9 @@ def mark_draft_reviewed(
     record = session.get(AdvisoryRun, advisory_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Advisory draft was not found.")
-    _refresh_advisory_status(session, record)
+    changed, _ = _refresh_advisory_status(session, record)
+    if changed:
+        session.commit()
     if record.llm_provider == "streaming":
         raise HTTPException(status_code=409, detail="LLM explanation is still streaming.")
     if record.status in {"expired", "rejected"}:
@@ -317,6 +329,83 @@ def research_facts(
     if not facts:
         warnings.append("The advisory has no extractable research facts in its saved evidence snapshot.")
     return ResearchAgentResponse(advisory_id=record.id, as_of_date=record.as_of_date, facts=facts, warnings=warnings)
+
+
+@router.get("/drafts/{advisory_id}/critique", response_model=CriticAgentResponse)
+def critique_advisory(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> CriticAgentResponse:
+    """Return deterministic evidence-quality and concentration objections for human review."""
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    changed, _ = _refresh_advisory_status(session, record)
+    if changed:
+        session.commit()
+    try:
+        risk = json.loads(record.risk_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="Advisory evidence snapshot is corrupt.") from exc
+    if not isinstance(risk, dict) or not isinstance(risk.get("evidence", {}), dict):
+        raise HTTPException(status_code=409, detail="Advisory evidence snapshot is corrupt.")
+    findings: list[CriticFindingOut] = []
+    evidence = risk["evidence"]
+    market = evidence.get("market", {})
+    factors = evidence.get("factors", {})
+    news = evidence.get("news", {})
+    validation = evidence.get("validation")
+    if not isinstance(market, dict) or not isinstance(factors, dict) or not isinstance(news, dict):
+        raise HTTPException(status_code=409, detail="Advisory evidence snapshot is corrupt.")
+    for label, value in (("market", market.get("data_end_date")), ("factor", factors.get("data_end_date"))):
+        if not value:
+            continue
+        try:
+            evidence_date = date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=f"Advisory {label} evidence is corrupt.") from exc
+        if evidence_date > record.as_of_date:
+            findings.append(CriticFindingOut(severity="blocker", code=f"future_{label}_evidence", message=f"{label.title()} evidence is later than the advisory date.", citation=str(value)))
+    news_items = news.get("items", [])
+    if not isinstance(news_items, list):
+        raise HTTPException(status_code=409, detail="Advisory news evidence is corrupt.")
+    for item in news_items:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=409, detail="Advisory news evidence is corrupt.")
+        known_at = item.get("known_at")
+        try:
+            known_date = datetime.fromisoformat(str(known_at).replace("Z", "+00:00")).date()
+        except ValueError:
+            raise HTTPException(status_code=409, detail="Advisory news evidence is corrupt.") from None
+        if known_date > record.as_of_date:
+            findings.append(CriticFindingOut(severity="blocker", code="future_news_evidence", message="A news item was known after the advisory date.", citation=str(known_at)))
+            break
+    severe_count = _finite_metric(news.get("severe_company_risk_count") or 0)
+    if severe_count is None or severe_count < 0 or not severe_count.is_integer():
+        raise HTTPException(status_code=409, detail="Advisory news evidence is corrupt.")
+    if severe_count > 0:
+        findings.append(CriticFindingOut(severity="warning", code="severe_company_news", message="Severe company-risk news is present in the observed window.", citation="persisted news evidence"))
+    accepted = risk.get("accepted", {})
+    if not isinstance(accepted, dict):
+        raise HTTPException(status_code=409, detail="Advisory risk decision is corrupt.")
+    weights = [_finite_metric(value) for value in accepted.values()]
+    if any(weight is None or weight < 0 or weight > 1 for weight in weights):
+        raise HTTPException(status_code=409, detail="Advisory risk decision is corrupt.")
+    weights = [weight for weight in weights if weight is not None]
+    if weights and max(weights) > 0.3:
+        findings.append(CriticFindingOut(severity="warning", code="concentrated_target", message="A single accepted target exceeds 30% weight.", citation="risk-gated target weights"))
+    if validation is None:
+        findings.append(CriticFindingOut(severity="warning", code="missing_oos_validation", message="No eligible rolling OOS validation is attached to this draft.", citation="advisory evidence snapshot"))
+    elif not _validation_snapshot_matches(session, record, validation):
+        findings.append(CriticFindingOut(severity="blocker", code="invalid_oos_validation", message="The attached rolling OOS validation no longer matches the draft provenance.", citation="advisory evidence snapshot"))
+    if record.status == "expired":
+        findings.append(CriticFindingOut(severity="blocker", code="expired_draft", message="The draft has expired and must be regenerated.", citation=record.as_of_date.isoformat()))
+    return CriticAgentResponse(
+        advisory_id=record.id,
+        as_of_date=record.as_of_date,
+        findings=findings,
+        approved_for_human_review=not any(item.severity == "blocker" for item in findings),
+    )
 
 
 @router.post(
@@ -498,6 +587,33 @@ def _candidate_metrics_are_valid(
         and -10 <= sharpe <= 10
         and -1 <= drawdown <= 0
         and -10 <= stressed_sharpe <= 10
+    )
+
+
+def _validation_snapshot_matches(session: Session, record: AdvisoryRun, snapshot: object) -> bool:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("validation_id"), int):
+        return False
+    validation = session.get(BacktestWalkForwardValidation, snapshot["validation_id"])
+    if validation is None or validation.status != "completed" or validation.eligibility_status != "eligible":
+        return False
+    run = session.get(BacktestRun, validation.backtest_run_id)
+    provenance = session.scalar(select(BacktestRunProvenance).where(BacktestRunProvenance.run_id == validation.backtest_run_id))
+    if run is None or provenance is None or validation.source_provenance_fingerprint != provenance.fingerprint:
+        return False
+    try:
+        spec = json.loads(validation.spec_json)
+        windows = spec["windows"]
+        source_as_of_date = date.fromisoformat(str(windows[-1]["oos_end_date"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        spec.get("strategy_name") == record.strategy_name
+        and spec.get("source_backtest_run_id") == run.id
+        and spec.get("source_provenance_fingerprint") == provenance.fingerprint
+        and source_as_of_date == record.as_of_date
+        and snapshot.get("backtest_run_id") == run.id
+        and snapshot.get("fingerprint") == validation.fingerprint
+        and str(snapshot.get("source_as_of_date")) == source_as_of_date.isoformat()
     )
 
 

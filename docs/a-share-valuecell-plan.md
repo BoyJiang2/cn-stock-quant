@@ -113,8 +113,10 @@ that is constrained to the already risk-gated trade-plan draft.
 - [x] P3-2 Strategy agent: compares eligible rolling-OOS strategy candidates
   using a deterministic, published score across return, drawdown, Sharpe, and
   cost-stress Sharpe. Invalid metrics and inconsistent provenance are excluded.
-- [ ] P3-3 Critic agent: looks for stale data, contradictory news, leakage,
-  concentration, and unsupported conclusions.
+- [x] P3-3 Critic agent: evaluates persisted evidence for stale data, future
+  leakage, severe observed news, concentration, and validation-provenance
+  mismatches. Its blockers prevent a research result from being described as
+  ready for human review; they never create an execution path.
 - [ ] P3-4 Risk agent: produces deterministic gate results and a plain-language
   explanation of rejected exposures.
 - [ ] P3-5 Store each agent's evidence and final synthesis for replay.

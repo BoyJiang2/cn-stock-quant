@@ -15,6 +15,7 @@ from app.models.entities import (
     AdvisoryNotificationDelivery,
     AdvisoryRun,
     BacktestRun,
+    BacktestRunProvenance,
     BacktestWalkForwardValidation,
     Base,
     DailyBar,
@@ -165,12 +166,23 @@ def _seed_walk_forward_validation(
         )
         session.add(run)
         session.flush()
+        provenance = BacktestRunProvenance(
+            run_id=run.id,
+            status="recorded_unvalidated",
+            spec_json="{}",
+            universe_json="{}",
+            result_json="{}",
+            fingerprint="source-test",
+        )
+        session.add(provenance)
         validation = BacktestWalkForwardValidation(
             backtest_run_id=run.id,
             status="completed",
             eligibility_status=eligibility_status,
             spec_json=json.dumps(
                 {
+                    "source_backtest_run_id": run.id,
+                    "source_provenance_fingerprint": provenance.fingerprint,
                     "strategy_name": strategy_name,
                     "strategy_parameters": strategy_parameters or {"fast_window": 5, "slow_window": 20},
                     "windows": [{"oos_end_date": as_of_date.isoformat()}],
@@ -625,6 +637,23 @@ def test_research_agent_returns_only_cited_snapshot_facts():
     facts = response.json()["facts"]
     assert any(item["source_type"] == "news" and "2026-07-13" in item["citation"] for item in facts)
     assert client.get("/api/advisory/drafts/999999/research").status_code == 404
+
+
+def test_critic_agent_flags_missing_oos_evidence_without_approving_execution():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={"strategy_name": "moving_average", "as_of_date": as_of_date.isoformat(), "symbols": ["000001"], "cash": 100_000},
+    )
+    response = client.get(f"/api/advisory/drafts/{draft.json()['id']}/critique")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approved_for_human_review"] is True
+    assert any(item["code"] == "missing_oos_validation" for item in body["findings"])
 
 
 def test_advisory_expires_after_a_later_local_trading_date_is_available():
