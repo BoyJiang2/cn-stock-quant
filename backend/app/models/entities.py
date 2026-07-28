@@ -248,6 +248,27 @@ class AdvisoryAgentSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AdvisoryOutcome(Base):
+    __tablename__ = "advisory_outcomes"
+    __table_args__ = (
+        UniqueConstraint("advisory_run_id", "horizon_trading_days", name="uq_advisory_outcome_horizon"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    advisory_run_id: Mapped[int] = mapped_column(ForeignKey("advisory_runs.id"), index=True)
+    horizon_trading_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    portfolio_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    excess_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_drawdown: Mapped[float | None] = mapped_column(Float, nullable=True)
+    severe_news_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    company_risk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class AdvisoryNotificationDelivery(Base):
     __tablename__ = "advisory_notification_deliveries"
     __table_args__ = (

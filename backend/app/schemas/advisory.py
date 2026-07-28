@@ -236,6 +236,26 @@ class AdvisoryReplayResponse(BaseModel):
     snapshots: list[AdvisoryAgentSnapshotOut] = Field(default_factory=list)
 
 
+class AdvisoryOutcomeOut(BaseModel):
+    horizon_trading_days: Literal[1, 5, 20]
+    status: Literal["pending", "ready"]
+    end_date: date | None = None
+    portfolio_return: float | None = None
+    benchmark_return: float | None = None
+    excess_return: float | None = None
+    max_drawdown: float | None = None
+    severe_news_count: int = 0
+    company_risk_count: int = 0
+    coverage_warning: str | None = None
+    evaluated_at: datetime
+
+
+class AdvisoryOutcomeResponse(BaseModel):
+    advisory_id: int
+    as_of_date: date
+    outcomes: list[AdvisoryOutcomeOut] = Field(default_factory=list)
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]

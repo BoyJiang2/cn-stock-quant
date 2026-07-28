@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from math import isfinite
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,10 +22,12 @@ from app.ai_advisory.service import (
 from app.core.config import settings
 from app.core.database import SessionLocal, get_session
 from app.data.repository import MarketDataRepository
-from app.models.entities import AdvisoryAgentSnapshot, AdvisoryNotificationDelivery, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar
+from app.models.entities import AdvisoryAgentSnapshot, AdvisoryNotificationDelivery, AdvisoryOutcome, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar, IndexDailyBar, NewsItem, TradingCalendar
 from app.notifications import NotificationDeliveryError, WeComGroupWebhookSender
 from app.schemas.advisory import (
     AdvisoryNotificationResponse,
+    AdvisoryOutcomeOut,
+    AdvisoryOutcomeResponse,
     AdvisoryAgentSnapshotOut,
     AdvisoryReplayResponse,
     AdvisoryRejectRequest,
@@ -533,6 +535,139 @@ def replay_advisory_evidence(
     )
 
 
+@router.get("/drafts/{advisory_id}/outcomes", response_model=AdvisoryOutcomeResponse)
+def list_advisory_outcomes(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> AdvisoryOutcomeResponse:
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    outcomes = list(
+        session.scalars(
+            select(AdvisoryOutcome)
+            .where(AdvisoryOutcome.advisory_run_id == advisory_id)
+            .order_by(AdvisoryOutcome.horizon_trading_days)
+        )
+    )
+    return AdvisoryOutcomeResponse(
+        advisory_id=record.id,
+        as_of_date=record.as_of_date,
+        outcomes=[_outcome_out(item) for item in outcomes],
+    )
+
+
+@router.post("/drafts/{advisory_id}/outcomes/refresh", response_model=AdvisoryOutcomeResponse)
+def refresh_advisory_outcomes(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> AdvisoryOutcomeResponse:
+    """Persist research-only post-advisory outcomes from complete local price paths."""
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    weights = _outcome_weights(record)
+    symbols = sorted(weights)
+    calendar_dates = list(
+        session.scalars(
+            select(TradingCalendar.trade_date)
+            .where(TradingCalendar.is_open.is_(True), TradingCalendar.trade_date >= record.as_of_date)
+            .order_by(TradingCalendar.trade_date)
+        )
+    )
+    index_bars = list(
+        session.scalars(
+            select(IndexDailyBar)
+            .where(IndexDailyBar.symbol == "000300", IndexDailyBar.trade_date >= record.as_of_date)
+            .order_by(IndexDailyBar.trade_date)
+        )
+    )
+    index_prices = {item.trade_date: float(item.close) for item in index_bars if item.close > 0}
+    future_dates = [item for item in calendar_dates if item > record.as_of_date]
+    price_rows = list(
+        session.scalars(
+            select(DailyBar)
+            .where(DailyBar.symbol.in_(symbols), DailyBar.trade_date >= record.as_of_date, DailyBar.adj == "qfq")
+            .order_by(DailyBar.trade_date)
+        )
+    ) if symbols else []
+    prices = {(item.symbol, item.trade_date): float(item.close) for item in price_rows if item.close > 0}
+    total_weight = sum(weights.values())
+    updated: list[AdvisoryOutcome] = []
+    for horizon in (1, 5, 20):
+        outcome = session.scalar(
+            select(AdvisoryOutcome).where(
+                AdvisoryOutcome.advisory_run_id == record.id,
+                AdvisoryOutcome.horizon_trading_days == horizon,
+            )
+        ) or AdvisoryOutcome(advisory_run_id=record.id, horizon_trading_days=horizon)
+        if outcome.id is None:
+            session.add(outcome)
+        outcome.evaluated_at = datetime.utcnow()
+        if record.as_of_date not in calendar_dates:
+            _set_pending_outcome(outcome, "The advisory as-of date is missing from the local trading calendar.")
+            updated.append(outcome)
+            continue
+        if record.as_of_date not in index_prices or len(future_dates) < horizon:
+            _set_pending_outcome(outcome, "Trading calendar or CSI 300 local bars do not yet cover this trading-day horizon.")
+            updated.append(outcome)
+            continue
+        end_date = future_dates[horizon - 1]
+        path_dates = [record.as_of_date, *future_dates[:horizon]]
+        if any(trade_date not in index_prices for trade_date in path_dates):
+            _set_pending_outcome(outcome, "CSI 300 local bars are incomplete for this trading-day path.")
+            updated.append(outcome)
+            continue
+        missing = [
+            symbol
+            for symbol in symbols
+            if any((symbol, trade_date) not in prices for trade_date in path_dates)
+        ]
+        if missing:
+            _set_pending_outcome(outcome, "Local bars are incomplete through the outcome date for: " + ", ".join(missing))
+            updated.append(outcome)
+            continue
+        portfolio_path = [
+            (1 - total_weight) + sum(weights[symbol] * prices[(symbol, trade_date)] / prices[(symbol, record.as_of_date)] for symbol in symbols)
+            for trade_date in path_dates
+        ]
+        portfolio_return = portfolio_path[-1] - 1
+        benchmark_return = index_prices[end_date] / index_prices[record.as_of_date] - 1
+        running_peak = 1.0
+        max_drawdown = 0.0
+        for equity in portfolio_path:
+            running_peak = max(running_peak, equity)
+            max_drawdown = min(max_drawdown, equity / running_peak - 1)
+        severe_news_count, company_risk_count = _outcome_news_counts(session, symbols, record.as_of_date, end_date)
+        outcome.status = "ready"
+        outcome.end_date = end_date
+        outcome.portfolio_return = round(portfolio_return, 8)
+        outcome.benchmark_return = round(benchmark_return, 8)
+        outcome.excess_return = round(portfolio_return - benchmark_return, 8)
+        outcome.max_drawdown = round(max_drawdown, 8)
+        outcome.severe_news_count = severe_news_count
+        outcome.company_risk_count = company_risk_count
+        outcome.details_json = json.dumps(
+            {
+                "symbols": symbols,
+                "total_target_weight": total_weight,
+                "observation_dates": [item.isoformat() for item in path_dates],
+                "price_adjustment": "qfq",
+                "market_calendar": "trading_calendar",
+                "news_scope": "company_level_observed_only",
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+        updated.append(outcome)
+    session.commit()
+    return AdvisoryOutcomeResponse(
+        advisory_id=record.id,
+        as_of_date=record.as_of_date,
+        outcomes=[_outcome_out(item) for item in sorted(updated, key=lambda value: value.horizon_trading_days)],
+    )
+
+
 @router.post(
     "/drafts/{advisory_id}/notify/wecom",
     response_model=AdvisoryNotificationResponse,
@@ -712,6 +847,77 @@ def _candidate_metrics_are_valid(
         and -10 <= sharpe <= 10
         and -1 <= drawdown <= 0
         and -10 <= stressed_sharpe <= 10
+    )
+
+
+def _outcome_weights(record: AdvisoryRun) -> dict[str, float]:
+    try:
+        risk = json.loads(record.risk_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="Advisory risk snapshot is corrupt.") from exc
+    accepted = risk.get("accepted") if isinstance(risk, dict) else None
+    if not isinstance(accepted, dict):
+        raise HTTPException(status_code=409, detail="Advisory accepted weights are corrupt.")
+    weights = {symbol: _finite_metric(weight) for symbol, weight in accepted.items() if isinstance(symbol, str) and symbol}
+    if len(weights) != len(accepted) or any(weight is None or weight < 0 or weight > 1 for weight in weights.values()):
+        raise HTTPException(status_code=409, detail="Advisory accepted weights are corrupt.")
+    numeric_weights = {symbol: weight for symbol, weight in weights.items() if weight is not None}
+    if sum(numeric_weights.values()) > 1 + 1e-9:
+        raise HTTPException(status_code=409, detail="Advisory accepted weights exceed total capital.")
+    return numeric_weights
+
+
+def _set_pending_outcome(outcome: AdvisoryOutcome, warning: str) -> None:
+    outcome.status = "pending"
+    outcome.end_date = None
+    outcome.portfolio_return = None
+    outcome.benchmark_return = None
+    outcome.excess_return = None
+    outcome.max_drawdown = None
+    outcome.severe_news_count = 0
+    outcome.company_risk_count = 0
+    outcome.details_json = json.dumps({"coverage_warning": warning}, ensure_ascii=True, sort_keys=True)
+
+
+def _outcome_news_counts(session: Session, symbols: list[str], start_date: date, end_date: date) -> tuple[int, int]:
+    if not symbols:
+        return 0, 0
+    start_at = datetime.combine(start_date, time.max)
+    end_at = datetime.combine(end_date, time.max)
+    events = list(
+        session.scalars(
+            select(NewsItem).where(
+                NewsItem.symbol.in_(symbols),
+                NewsItem.published_at <= end_at,
+                NewsItem.fetched_at <= end_at,
+            )
+        )
+    )
+    subsequent = [item for item in events if max(item.published_at, item.fetched_at) > start_at]
+    return (
+        sum(item.event_type == "severe_company_risk" for item in subsequent),
+        sum(item.event_type == "company_risk" for item in subsequent),
+    )
+
+
+def _outcome_out(outcome: AdvisoryOutcome) -> AdvisoryOutcomeOut:
+    try:
+        details = json.loads(outcome.details_json)
+    except (TypeError, json.JSONDecodeError):
+        details = {}
+    warning = details.get("coverage_warning") if isinstance(details, dict) else None
+    return AdvisoryOutcomeOut(
+        horizon_trading_days=outcome.horizon_trading_days,
+        status=outcome.status,
+        end_date=outcome.end_date,
+        portfolio_return=outcome.portfolio_return,
+        benchmark_return=outcome.benchmark_return,
+        excess_return=outcome.excess_return,
+        max_drawdown=outcome.max_drawdown,
+        severe_news_count=outcome.severe_news_count,
+        company_risk_count=outcome.company_risk_count,
+        coverage_warning=warning if isinstance(warning, str) else None,
+        evaluated_at=outcome.evaluated_at,
     )
 
 

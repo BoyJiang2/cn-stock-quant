@@ -4,6 +4,7 @@ import json
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy import delete
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -138,6 +139,61 @@ def _seed_news(
                 fetched_at=fetched_at,
             )
         )
+        session.commit()
+    finally:
+        session.close()
+
+
+def _seed_outcome_window(session_factory: sessionmaker, symbol: str, as_of_date: date) -> None:
+    session = session_factory()
+    try:
+        base_stock_close = 16.9
+        base_index_close = 3000.0
+        session.add(TradingCalendar(trade_date=as_of_date, is_open=True))
+        session.add(
+            IndexDailyBar(
+                symbol="000300",
+                trade_date=as_of_date,
+                open=base_index_close,
+                high=base_index_close,
+                low=base_index_close,
+                close=base_index_close,
+                volume=1_000.0,
+                amount=3_000_000.0,
+            )
+        )
+        for offset in range(1, 21):
+            trade_date = as_of_date + timedelta(days=offset)
+            stock_close = base_stock_close * (1 + 0.01 * offset)
+            index_close = base_index_close * (1 + 0.005 * offset)
+            session.add(
+                TradingCalendar(trade_date=trade_date, is_open=True)
+            )
+            session.add(
+                DailyBar(
+                    symbol=symbol,
+                    trade_date=trade_date,
+                    open=stock_close,
+                    high=stock_close,
+                    low=stock_close,
+                    close=stock_close,
+                    volume=1_000.0,
+                    amount=100_000.0,
+                    adj="qfq",
+                )
+            )
+            session.add(
+                IndexDailyBar(
+                    symbol="000300",
+                    trade_date=trade_date,
+                    open=index_close,
+                    high=index_close,
+                    low=index_close,
+                    close=index_close,
+                    volume=1_000.0,
+                    amount=3_000_000.0,
+                )
+            )
         session.commit()
     finally:
         session.close()
@@ -754,6 +810,84 @@ def test_advisory_replay_rejects_snapshots_copied_from_another_draft():
         session.close()
 
     assert client.get(f"/api/advisory/drafts/{first_id}/replay").status_code == 409
+
+
+def test_advisory_outcomes_track_complete_return_drawdown_and_subsequent_news():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={"strategy_name": "moving_average", "as_of_date": as_of_date.isoformat(), "symbols": ["000001"], "cash": 100_000},
+    )
+    advisory_id = draft.json()["id"]
+    accepted_weight = draft.json()["accepted_target_weights"]["000001"]
+    _seed_outcome_window(session_factory, "000001", as_of_date)
+    _seed_news(
+        session_factory,
+        symbol="000001",
+        source_id="outcome-severe",
+        published_at=datetime(2026, 7, 16, 9, 0),
+        fetched_at=datetime(2026, 7, 16, 9, 1),
+        event_type="severe_company_risk",
+    )
+
+    response = client.post(f"/api/advisory/drafts/{advisory_id}/outcomes/refresh")
+
+    assert response.status_code == 200
+    outcomes = {item["horizon_trading_days"]: item for item in response.json()["outcomes"]}
+    assert set(outcomes) == {1, 5, 20}
+    assert all(item["status"] == "ready" for item in outcomes.values())
+    assert abs(outcomes[1]["portfolio_return"] - accepted_weight * 0.01) < 1e-8
+    assert abs(outcomes[1]["benchmark_return"] - 0.005) < 1e-8
+    assert outcomes[5]["severe_news_count"] == 1
+    assert outcomes[20]["max_drawdown"] == 0
+    assert client.get(f"/api/advisory/drafts/{advisory_id}/outcomes").json()["outcomes"] == response.json()["outcomes"]
+
+
+def test_advisory_outcomes_stay_pending_without_complete_local_coverage():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={"strategy_name": "moving_average", "as_of_date": as_of_date.isoformat(), "symbols": ["000001"], "cash": 100_000},
+    )
+
+    response = client.post(f"/api/advisory/drafts/{draft.json()['id']}/outcomes/refresh")
+
+    assert response.status_code == 200
+    assert all(item["status"] == "pending" and item["coverage_warning"] for item in response.json()["outcomes"])
+
+
+def test_advisory_outcomes_stay_pending_when_benchmark_misses_a_calendar_date():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={"strategy_name": "moving_average", "as_of_date": as_of_date.isoformat(), "symbols": ["000001"], "cash": 100_000},
+    )
+    _seed_outcome_window(session_factory, "000001", as_of_date)
+    session = session_factory()
+    try:
+        session.execute(
+            delete(IndexDailyBar).where(
+                IndexDailyBar.symbol == "000300",
+                IndexDailyBar.trade_date == as_of_date + timedelta(days=1),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post(f"/api/advisory/drafts/{draft.json()['id']}/outcomes/refresh")
+
+    assert response.status_code == 200
+    assert all(item["status"] == "pending" for item in response.json()["outcomes"])
 
 
 def test_advisory_expires_after_a_later_local_trading_date_is_available():

@@ -136,8 +136,11 @@ that is constrained to the already risk-gated trade-plan draft.
 
 ### P5: Evaluation Before Trust
 
-- [ ] P5-1 Track each advisory's subsequent 1/5/20-day return, benchmark
-  excess, drawdown, and adverse-news outcome.
+- [x] P5-1 Track each advisory's subsequent 1/5/20-trading-day return,
+  benchmark excess, drawdown, and observed subsequent adverse-news outcome;
+  windows require the local trading calendar, CSI 300, and full `qfq` price
+  paths. Incomplete coverage remains explicitly pending; news is company-level
+  observed evidence only, bounded by known-at timestamps.
 - [ ] P5-2 Compare model-assisted reports against the same deterministic
   strategy without LLM text.
 - [ ] P5-3 Require multi-period out-of-sample evidence before promoting any
