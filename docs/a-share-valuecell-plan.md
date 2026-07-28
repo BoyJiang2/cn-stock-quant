@@ -109,7 +109,7 @@ that is constrained to the already risk-gated trade-plan draft.
 
 ### P3: Multi-Agent Research Loop
 
-- [ ] P3-1 Research agent: facts from local data/news with citations.
+- [x] P3-1 Research agent: facts from local data/news with citations.
 - [x] P3-2 Strategy agent: compares eligible rolling-OOS strategy candidates
   using a deterministic, published score across return, drawdown, Sharpe, and
   cost-stress Sharpe. Invalid metrics and inconsistent provenance are excluded.
