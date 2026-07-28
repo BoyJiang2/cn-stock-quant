@@ -15,6 +15,7 @@ from app.main import create_app
 from app.models.entities import (
     AdvisoryAgentSnapshot,
     AdvisoryNotificationDelivery,
+    ResearchCemeteryEntry,
     AdvisoryRun,
     BacktestRun,
     BacktestRunProvenance,
@@ -933,6 +934,48 @@ def test_llm_comparison_keeps_the_deterministic_strategy_as_the_control():
         "summary_fingerprint": body["llm_layer"]["summary_fingerprint"],
     }
     assert len(body["llm_layer"]["summary_fingerprint"]) == 64
+
+
+def test_research_cemetery_returns_preserved_failed_research_with_metrics():
+    session_factory = _session_factory()
+    session = session_factory()
+    try:
+        session.add(
+            ResearchCemeteryEntry(
+                research_type="strategy",
+                subject_name="moving_average",
+                source_ref="42",
+                source_fingerprint="f" * 64,
+                reason="insufficient OOS history",
+                metrics_json=json.dumps({"window_count": 1}),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = _client(session_factory).get("/api/advisory/research-cemetery?research_type=strategy")
+
+    assert response.status_code == 200
+    assert response.json()[0]["subject_name"] == "moving_average"
+    assert response.json()[0]["metrics"] == {"window_count": 1}
+
+
+def test_strategy_cemetery_backfill_is_explicit_and_idempotent():
+    session_factory = _session_factory()
+    _seed_walk_forward_validation(
+        session_factory,
+        as_of_date=date(2026, 7, 14),
+        eligibility_status="not_eligible_insufficient_oos_history",
+    )
+    client = _client(session_factory)
+
+    first = client.post("/api/advisory/research-cemetery/backfill-strategies")
+    second = client.post("/api/advisory/research-cemetery/backfill-strategies")
+
+    assert first.status_code == 200
+    assert first.json() == {"inserted": 1}
+    assert second.json() == {"inserted": 0}
 
 
 def test_advisory_expires_after_a_later_local_trading_date_is_available():

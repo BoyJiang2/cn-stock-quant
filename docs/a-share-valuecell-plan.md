@@ -148,7 +148,10 @@ that is constrained to the already risk-gated trade-plan draft.
 - [x] P5-3 Require an explicit human review plus at least three distinct,
   completed, eligible rolling OOS windows with matching strategy and provenance
   before an advisory can be promoted into the local paper portfolio.
-- [ ] P5-4 Publish a factor/strategy cemetery for failed ideas.
+- [x] P5-4 Publish a factor/strategy cemetery. Non-eligible walk-forward
+  validations and factor experiments with weak or insufficient RankIC evidence
+  are preserved with source fingerprints, metrics, and failure reasons. Legacy
+  non-eligible strategy validations have an explicit idempotent backfill route.
 
 ## Provider and Secret Policy
 

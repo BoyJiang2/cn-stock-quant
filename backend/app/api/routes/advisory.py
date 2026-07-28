@@ -3,7 +3,7 @@ import json
 from datetime import date, datetime, time, timedelta
 from math import isfinite
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -22,8 +22,10 @@ from app.ai_advisory.service import (
 from app.core.config import settings
 from app.core.database import SessionLocal, get_session
 from app.data.repository import MarketDataRepository
-from app.models.entities import AdvisoryAgentSnapshot, AdvisoryNotificationDelivery, AdvisoryOutcome, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar, IndexDailyBar, NewsItem, TradingCalendar
+from app.models.entities import AdvisoryAgentSnapshot, AdvisoryNotificationDelivery, AdvisoryOutcome, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar, IndexDailyBar, NewsItem, ResearchCemeteryEntry, TradingCalendar
+from app.schemas.cemetery import ResearchCemeteryEntryOut
 from app.notifications import NotificationDeliveryError, WeComGroupWebhookSender
+from app.research_cemetery import backfill_noneligible_strategy_entries
 from app.schemas.advisory import (
     AdvisoryNotificationResponse,
     AdvisoryOutcomeOut,
@@ -187,6 +189,44 @@ def strategy_candidates(session: Session = Depends(get_session)) -> StrategyAgen
         scoring_method="score = annual_return*100 + sharpe*10 - abs(max_drawdown)*40 + cost_stress_sharpe*5; eligible rolling OOS records only",
         warnings=["This ranking is historical validation evidence, not a future-return forecast or trade instruction."],
     )
+
+
+@router.get("/research-cemetery", response_model=list[ResearchCemeteryEntryOut])
+def research_cemetery(
+    research_type: str | None = Query(default=None, pattern="^(strategy|factor)$"),
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: Session = Depends(get_session),
+) -> list[ResearchCemeteryEntryOut]:
+    stmt = select(ResearchCemeteryEntry).order_by(ResearchCemeteryEntry.created_at.desc()).limit(limit)
+    if research_type:
+        stmt = stmt.where(ResearchCemeteryEntry.research_type == research_type)
+    entries: list[ResearchCemeteryEntryOut] = []
+    for entry in session.scalars(stmt):
+        if entry.research_type not in {"strategy", "factor"}:
+            continue
+        try:
+            metrics = json.loads(entry.metrics_json)
+        except (TypeError, json.JSONDecodeError):
+            metrics = {"warning": "stored cemetery metrics are corrupt"}
+        entries.append(
+            ResearchCemeteryEntryOut(
+                id=entry.id,
+                research_type=entry.research_type,
+                subject_name=entry.subject_name,
+                source_ref=entry.source_ref,
+                source_fingerprint=entry.source_fingerprint,
+                reason=entry.reason,
+                metrics=metrics if isinstance(metrics, dict) else {"warning": "stored cemetery metrics are not an object"},
+                created_at=entry.created_at,
+            )
+        )
+    return entries
+
+
+@router.post("/research-cemetery/backfill-strategies")
+def backfill_strategy_cemetery(session: Session = Depends(get_session)) -> dict[str, int]:
+    """Explicitly import pre-cemetery non-eligible validations without changing research results."""
+    return {"inserted": backfill_noneligible_strategy_entries(session)}
 
 
 @router.post("/drafts", response_model=AdvisoryResponse)

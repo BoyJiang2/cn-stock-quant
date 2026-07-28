@@ -17,6 +17,7 @@ from app.factors import (
     forward_returns,
     preprocess,
 )
+from app.research_cemetery import record_cemetery_entry
 from app.schemas.factors import (
     FactorExperimentRequest,
     FactorExperimentResponse,
@@ -216,6 +217,27 @@ def run_factor_experiment(
         key=lambda item: item.rankic_mean if item.rankic_mean is not None else float("-inf"),
         reverse=True,
     )
+    for summary in summaries:
+        reasons: list[str] = []
+        if summary.n_dates < 20:
+            reasons.append(f"only {summary.n_dates} valid evaluation dates")
+        if summary.rankic_mean is None:
+            reasons.append("RankIC is unavailable")
+        elif summary.rankic_mean <= 0:
+            reasons.append(f"non-positive RankIC ({summary.rankic_mean:.4f})")
+        if reasons:
+            record_cemetery_entry(
+                session,
+                research_type="factor",
+                subject_name=summary.name,
+                source_ref=str(run_metadata["run_hash"]),
+                source_fingerprint=hashlib.sha256(
+                    f"{run_metadata['run_hash']}:{summary.name}".encode("utf-8")
+                ).hexdigest(),
+                reason="; ".join(reasons),
+                metrics=summary.model_dump(mode="json"),
+            )
+    session.commit()
     return FactorExperimentResponse(
         selected_symbols=symbols,
         factor_count=len(requested),

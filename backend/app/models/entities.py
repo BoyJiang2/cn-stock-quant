@@ -135,6 +135,22 @@ class BacktestWalkForwardValidation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ResearchCemeteryEntry(Base):
+    __tablename__ = "research_cemetery_entries"
+    __table_args__ = (
+        UniqueConstraint("research_type", "subject_name", "source_fingerprint", name="uq_research_cemetery_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    research_type: Mapped[str] = mapped_column(String(16), index=True)
+    subject_name: Mapped[str] = mapped_column(String(128), index=True)
+    source_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BacktestEquity(Base):
     __tablename__ = "backtest_equity"
 
