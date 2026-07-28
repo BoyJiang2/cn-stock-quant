@@ -32,6 +32,8 @@ from app.schemas.advisory import (
     AdvisoryReviewResponse,
     CriticAgentResponse,
     CriticFindingOut,
+    RiskAgentResponse,
+    RiskRejectionOut,
     ResearchAgentResponse,
     ResearchFactOut,
     StrategyAgentResponse,
@@ -405,6 +407,72 @@ def critique_advisory(
         as_of_date=record.as_of_date,
         findings=findings,
         approved_for_human_review=not any(item.severity == "blocker" for item in findings),
+    )
+
+
+@router.get("/drafts/{advisory_id}/risk", response_model=RiskAgentResponse)
+def risk_decision_explanation(
+    advisory_id: int,
+    session: Session = Depends(get_session),
+) -> RiskAgentResponse:
+    """Explain the persisted deterministic risk gate without recomputing targets."""
+    record = session.get(AdvisoryRun, advisory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Advisory draft was not found.")
+    try:
+        risk = json.loads(record.risk_json)
+        request = json.loads(record.request_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="Advisory risk snapshot is corrupt.") from exc
+    accepted = risk.get("accepted") if isinstance(risk, dict) else None
+    rejected = risk.get("rejected") if isinstance(risk, dict) else None
+    if not isinstance(accepted, dict) or not isinstance(rejected, dict) or not isinstance(request, dict):
+        raise HTTPException(status_code=409, detail="Advisory risk snapshot is corrupt.")
+    weights = {symbol: _finite_metric(weight) for symbol, weight in accepted.items() if isinstance(symbol, str)}
+    if len(weights) != len(accepted) or any(weight is None or weight < 0 or weight > 1 for weight in weights.values()):
+        raise HTTPException(status_code=409, detail="Advisory accepted weights are corrupt.")
+    if any(not isinstance(symbol, str) or not isinstance(reason, str) for symbol, reason in rejected.items()):
+        raise HTTPException(status_code=409, detail="Advisory rejection reasons are corrupt.")
+    accepted_values = [weight for weight in weights.values() if weight is not None]
+    total_weight = round(sum(accepted_values), 6)
+    raw_symbol_cap = request.get("max_symbol_weight")
+    raw_total_cap = request.get("max_total_weight")
+    max_symbol_weight = _finite_metric(raw_symbol_cap)
+    max_total_weight = _finite_metric(raw_total_cap)
+    max_positions = request.get("max_positions")
+    if (
+        max_symbol_weight is None
+        or max_total_weight is None
+        or not 0 <= max_symbol_weight <= 1
+        or not 0 <= max_total_weight <= 1
+        or isinstance(max_positions, bool)
+        or not isinstance(max_positions, int)
+        or max_positions < 1
+    ):
+        raise HTTPException(status_code=409, detail="Advisory risk constraints are corrupt.")
+    if (
+        any(weight > max_symbol_weight for weight in accepted_values)
+        or total_weight > max_total_weight
+        or len(accepted_values) > max_positions
+    ):
+        raise HTTPException(status_code=409, detail="Advisory risk gate result violates its saved constraints.")
+    explanation = [
+        f"Risk gate retained {len(accepted_values)} target positions with total target weight {total_weight:.2%}.",
+        f"Largest accepted target weight is {(max(accepted_values) if accepted_values else 0.0):.2%}.",
+        f"Saved caps are {max_symbol_weight:.2%} per symbol, {max_total_weight:.2%} total, and {max_positions} positions.",
+    ]
+    if rejected:
+        explanation.append(f"Risk gate rejected {len(rejected)} target exposures; see per-symbol reasons.")
+    return RiskAgentResponse(
+        advisory_id=record.id,
+        accepted_weight=total_weight,
+        accepted_position_count=len(accepted_values),
+        largest_accepted_weight=round(max(accepted_values), 6) if accepted_values else 0.0,
+        max_symbol_weight=max_symbol_weight,
+        max_total_weight=max_total_weight,
+        max_positions=max_positions,
+        rejections=[RiskRejectionOut(symbol=symbol, reason=reason) for symbol, reason in sorted(rejected.items())],
+        explanation=explanation,
     )
 
 

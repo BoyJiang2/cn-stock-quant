@@ -205,6 +205,23 @@ class CriticAgentResponse(BaseModel):
     approved_for_human_review: bool
 
 
+class RiskRejectionOut(BaseModel):
+    symbol: str
+    reason: str
+
+
+class RiskAgentResponse(BaseModel):
+    advisory_id: int
+    accepted_weight: float
+    accepted_position_count: int
+    largest_accepted_weight: float
+    max_symbol_weight: float | None = None
+    max_total_weight: float | None = None
+    max_positions: int | None = None
+    rejections: list[RiskRejectionOut] = Field(default_factory=list)
+    explanation: list[str] = Field(default_factory=list)
+
+
 class AdvisoryNotificationResponse(BaseModel):
     delivery_id: int
     status: Literal["sent"]

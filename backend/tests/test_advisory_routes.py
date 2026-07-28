@@ -656,6 +656,48 @@ def test_critic_agent_flags_missing_oos_evidence_without_approving_execution():
     assert any(item["code"] == "missing_oos_validation" for item in body["findings"])
 
 
+def test_risk_agent_explains_persisted_risk_gate_decision():
+    session_factory = _session_factory()
+    as_of_date = date(2026, 7, 14)
+    _seed_bars(session_factory, "000001", as_of_date)
+    client = _client(session_factory)
+    draft = client.post(
+        "/api/advisory/drafts",
+        json={
+            "strategy_name": "moving_average",
+            "as_of_date": as_of_date.isoformat(),
+            "symbols": ["000001"],
+            "cash": 100_000,
+        },
+    )
+    advisory_id = draft.json()["id"]
+    session = session_factory()
+    try:
+        record = session.get(AdvisoryRun, advisory_id)
+        assert record is not None
+        record.risk_json = json.dumps(
+            {
+                "accepted": {"000001": 0.1},
+                "rejected": {"000002": "maximum positions reached"},
+            }
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(f"/api/advisory/drafts/{advisory_id}/risk")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted_weight"] == 0.1
+    assert body["accepted_position_count"] == 1
+    assert body["largest_accepted_weight"] == 0.1
+    assert body["max_symbol_weight"] == 0.1
+    assert body["max_total_weight"] == 0.8
+    assert body["max_positions"] == 20
+    assert body["rejections"] == [{"symbol": "000002", "reason": "maximum positions reached"}]
+
+
 def test_advisory_expires_after_a_later_local_trading_date_is_available():
     session_factory = _session_factory()
     as_of_date = date(2026, 7, 14)

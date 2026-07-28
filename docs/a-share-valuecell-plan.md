@@ -117,8 +117,8 @@ that is constrained to the already risk-gated trade-plan draft.
   leakage, severe observed news, concentration, and validation-provenance
   mismatches. Its blockers prevent a research result from being described as
   ready for human review; they never create an execution path.
-- [ ] P3-4 Risk agent: produces deterministic gate results and a plain-language
-  explanation of rejected exposures.
+- [x] P3-4 Risk agent: exposes the persisted deterministic gate result, risk
+  caps, retained exposure, and plain-language per-symbol rejection reasons.
 - [ ] P3-5 Store each agent's evidence and final synthesis for replay.
 
 ### P4: Notifications and Daily Workflow
