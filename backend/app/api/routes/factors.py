@@ -21,6 +21,7 @@ from app.factors import (
     preprocess,
 )
 from app.factors.screening import screen_factor_metrics
+from app.factors.stability import evaluate_factor_stability
 from app.research_cemetery import factor_cemetery_reason, record_cemetery_entry
 from app.models.entities import FactorExperiment
 from app.schemas.factors import (
@@ -253,6 +254,17 @@ def run_factor_experiment(
             long_short_return=long_short_return,
             long_short_turnover=long_short_turnover,
         )
+        stability_status, stability_reasons, stability_folds = evaluate_factor_stability(
+            adjusted,
+            label,
+            n_groups=payload.n_groups,
+        )
+        if stability_status == "unstable":
+            screening_status = "rejected"
+            screening_reasons = [*screening_reasons, *stability_reasons]
+        elif screening_status == "candidate" and stability_status != "stable":
+            screening_status = "watch"
+            screening_reasons = [*screening_reasons, *stability_reasons]
         summaries.append(
             FactorSummaryOut(
                 name=name,
@@ -270,6 +282,9 @@ def run_factor_experiment(
                 },
                 screening_status=screening_status,
                 screening_reasons=screening_reasons,
+                stability_status=stability_status,
+                stability_reasons=stability_reasons,
+                stability_folds=stability_folds,
             )
         )
         if summaries[-1].n_dates < 20:

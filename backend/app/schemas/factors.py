@@ -33,6 +33,9 @@ class FactorSummaryOut(BaseModel):
     group_returns: dict[int, float | None]
     screening_status: Literal["candidate", "watch", "rejected"] = "watch"
     screening_reasons: list[str] = Field(default_factory=list)
+    stability_status: Literal["stable", "watch", "unstable"] = "watch"
+    stability_reasons: list[str] = Field(default_factory=list)
+    stability_folds: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FactorExperimentResponse(BaseModel):

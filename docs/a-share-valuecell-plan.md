@@ -164,7 +164,9 @@ that is constrained to the already risk-gated trade-plan draft.
   point-in-time rolling-OOS research stage; it is never a trade approval.
 - [x] P6-2 Expand only trailing, locally reproducible OHLCV factor families
   and record their implementation versions with each experiment.
-- [ ] P6-3 Require cross-period stability, turnover/cost stress, and
+- [x] P6-3a Require consecutive cross-period stability before a factor can
+  remain a research candidate; factor experiments expose fold-level evidence.
+- [ ] P6-3b Require turnover/cost stress and
   point-in-time rolling-OOS evidence before a factor can enter a composite or
   model feature set.
 - [ ] P6-4 Compare eligible factor candidates across market regimes and

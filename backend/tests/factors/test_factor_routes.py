@@ -112,6 +112,8 @@ def test_factor_experiment_runs_and_returns_json_safe_summary():
     assert body["run_metadata"]["point_in_time"] is False
     assert body["run_metadata"]["degraded"] is True
     assert all(summary["n_dates"] >= 0 for summary in body["summaries"])
+    assert all(summary["stability_status"] in {"stable", "watch", "unstable"} for summary in body["summaries"])
+    assert all(len(summary["stability_folds"]) == 3 for summary in body["summaries"])
 
 
 def test_factor_experiment_persists_replay_inputs_summary_and_metadata():
