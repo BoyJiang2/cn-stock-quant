@@ -25,7 +25,7 @@ from app.data.repository import MarketDataRepository
 from app.models.entities import AdvisoryAgentSnapshot, AdvisoryNotificationDelivery, AdvisoryOutcome, AdvisoryRun, BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, DailyBar, IndexDailyBar, NewsItem, ResearchCemeteryEntry, TradingCalendar
 from app.schemas.cemetery import ResearchCemeteryEntryOut
 from app.notifications import NotificationDeliveryError, WeComGroupWebhookSender
-from app.research_cemetery import backfill_noneligible_strategy_entries
+from app.research_cemetery import backfill_factor_entries, backfill_noneligible_strategy_entries
 from app.schemas.advisory import (
     AdvisoryNotificationResponse,
     AdvisoryOutcomeOut,
@@ -226,7 +226,13 @@ def research_cemetery(
 @router.post("/research-cemetery/backfill-strategies")
 def backfill_strategy_cemetery(session: Session = Depends(get_session)) -> dict[str, int]:
     """Explicitly import pre-cemetery non-eligible validations without changing research results."""
-    return {"inserted": backfill_noneligible_strategy_entries(session)}
+    return backfill_noneligible_strategy_entries(session)
+
+
+@router.post("/research-cemetery/backfill-factors")
+def backfill_factor_cemetery(session: Session = Depends(get_session)) -> dict[str, int]:
+    """Explicitly import failed persisted factor experiments without rerunning them."""
+    return backfill_factor_entries(session)
 
 
 @router.post("/drafts", response_model=AdvisoryResponse)

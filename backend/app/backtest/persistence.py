@@ -171,26 +171,30 @@ def save_walk_forward_validation(
         source_provenance_fingerprint=source_provenance_fingerprint,
         fingerprint=fingerprint,
     )
-    session.add(validation)
-    session.commit()
-    session.refresh(validation)
-    if eligibility_status != "eligible":
-        run = session.get(BacktestRun, backtest_run_id)
-        flags = quality.get("quality_flags", []) if isinstance(quality, dict) else []
-        record_cemetery_entry(
-            session,
-            research_type="strategy",
-            subject_name=run.strategy_name if run is not None else "unknown_strategy",
-            source_ref=str(validation.id),
-            source_fingerprint=validation.fingerprint,
-            reason="; ".join(flag for flag in flags if isinstance(flag, str)) or eligibility_status,
-            metrics={
-                "eligibility_status": eligibility_status,
-                "aggregate": result.get("aggregate", {}) if isinstance(result, dict) else {},
-                "window_count": quality.get("window_count") if isinstance(quality, dict) else None,
-            },
-        )
+    try:
+        session.add(validation)
+        session.flush()
+        if eligibility_status != "eligible":
+            run = session.get(BacktestRun, backtest_run_id)
+            flags = quality.get("quality_flags", []) if isinstance(quality, dict) else []
+            record_cemetery_entry(
+                session,
+                research_type="strategy",
+                subject_name=run.strategy_name if run is not None else "unknown_strategy",
+                source_ref=str(validation.id),
+                source_fingerprint=validation.fingerprint,
+                reason="; ".join(flag for flag in flags if isinstance(flag, str)) or eligibility_status,
+                metrics={
+                    "eligibility_status": eligibility_status,
+                    "aggregate": result.get("aggregate", {}) if isinstance(result, dict) else {},
+                    "window_count": quality.get("window_count") if isinstance(quality, dict) else None,
+                },
+            )
         session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    session.refresh(validation)
     return validation
 
 

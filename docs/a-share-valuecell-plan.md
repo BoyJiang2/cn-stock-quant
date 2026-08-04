@@ -150,8 +150,12 @@ that is constrained to the already risk-gated trade-plan draft.
   before an advisory can be promoted into the local paper portfolio.
 - [x] P5-4 Publish a factor/strategy cemetery. Non-eligible walk-forward
   validations and factor experiments with weak or insufficient RankIC evidence
-  are preserved with source fingerprints, metrics, and failure reasons. Legacy
-  non-eligible strategy validations have an explicit idempotent backfill route.
+  are preserved with source fingerprints, metrics, and failure reasons. Factor
+  experiments now persist their request, summary, implementation version, and
+  actual-OHLCV snapshot fingerprint; both factor and strategy records have
+  explicit idempotent backfill routes. Results created before factor-experiment
+  persistence cannot be reconstructed because their raw experiment payloads
+  were never stored.
 
 ## Provider and Secret Policy
 

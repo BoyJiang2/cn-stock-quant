@@ -16,6 +16,7 @@ from app.models.entities import (
     AdvisoryAgentSnapshot,
     AdvisoryNotificationDelivery,
     ResearchCemeteryEntry,
+    FactorExperiment,
     AdvisoryRun,
     BacktestRun,
     BacktestRunProvenance,
@@ -974,8 +975,92 @@ def test_strategy_cemetery_backfill_is_explicit_and_idempotent():
     second = client.post("/api/advisory/research-cemetery/backfill-strategies")
 
     assert first.status_code == 200
-    assert first.json() == {"inserted": 1}
-    assert second.json() == {"inserted": 0}
+    assert first.json() == {"inserted": 1, "corrupt_sources": 0}
+    assert second.json() == {"inserted": 0, "corrupt_sources": 0}
+
+
+def test_strategy_cemetery_backfill_marks_corrupt_validation_payloads():
+    session_factory = _session_factory()
+    validation_id = _seed_walk_forward_validation(
+        session_factory,
+        as_of_date=date(2026, 7, 14),
+        eligibility_status="not_eligible_insufficient_oos_history",
+    )
+    session = session_factory()
+    try:
+        validation = session.get(BacktestWalkForwardValidation, validation_id)
+        assert validation is not None
+        validation.quality_json = "{not valid JSON"
+        session.commit()
+    finally:
+        session.close()
+
+    client = _client(session_factory)
+    response = client.post("/api/advisory/research-cemetery/backfill-strategies")
+    entries = client.get("/api/advisory/research-cemetery?research_type=strategy")
+
+    assert response.status_code == 200
+    assert response.json() == {"inserted": 1, "corrupt_sources": 1}
+    assert entries.status_code == 200
+    assert entries.json()[0]["reason"].startswith("corrupt_source_data")
+    assert entries.json()[0]["metrics"]["corrupt_source_data"] is True
+
+
+def test_factor_cemetery_backfill_is_explicit_and_idempotent():
+    session_factory = _session_factory()
+    session = session_factory()
+    try:
+        session.add(
+            FactorExperiment(
+                experiment_fingerprint="e" * 64,
+                request_json=json.dumps({"factor_names": ["momentum_5d"]}),
+                response_summary_json=json.dumps(
+                    {
+                        "summaries": [
+                            {"name": "momentum_5d", "n_dates": 30, "rankic_mean": -0.01}
+                        ]
+                    }
+                ),
+                run_metadata_json=json.dumps({"run_hash": "r" * 64}),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    client = _client(session_factory)
+    first = client.post("/api/advisory/research-cemetery/backfill-factors")
+    second = client.post("/api/advisory/research-cemetery/backfill-factors")
+
+    assert first.status_code == 200
+    assert first.json() == {"inserted": 1, "corrupt_sources": 0}
+    assert second.json() == {"inserted": 0, "corrupt_sources": 0}
+
+
+def test_factor_cemetery_backfill_preserves_structurally_corrupt_summaries():
+    session_factory = _session_factory()
+    session = session_factory()
+    try:
+        session.add(
+            FactorExperiment(
+                experiment_fingerprint="c" * 64,
+                request_json="{}",
+                response_summary_json=json.dumps({"summaries": [{"rankic_mean": 0.1}]}),
+                run_metadata_json="{}",
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    client = _client(session_factory)
+    response = client.post("/api/advisory/research-cemetery/backfill-factors")
+    entries = client.get("/api/advisory/research-cemetery?research_type=factor")
+
+    assert response.status_code == 200
+    assert response.json() == {"inserted": 1, "corrupt_sources": 1}
+    assert entries.status_code == 200
+    assert entries.json()[0]["reason"].startswith("corrupt_source_data")
 
 
 def test_advisory_expires_after_a_later_local_trading_date_is_available():

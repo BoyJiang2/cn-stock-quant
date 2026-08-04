@@ -151,6 +151,20 @@ class ResearchCemeteryEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class FactorExperiment(Base):
+    __tablename__ = "factor_experiments"
+    __table_args__ = (
+        UniqueConstraint("experiment_fingerprint", name="uq_factor_experiment_fingerprint"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    experiment_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    request_json: Mapped[str] = mapped_column(Text, default="{}")
+    response_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    run_metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BacktestEquity(Base):
     __tablename__ = "backtest_equity"
 

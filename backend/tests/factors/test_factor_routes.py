@@ -1,17 +1,22 @@
+import json
 from datetime import date, timedelta
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import Base, DailyBar, Stock
+from app.models.entities import Base, DailyBar, FactorExperiment, Stock
 from app.schemas.factors import FactorExperimentRequest
 
 
 def _client() -> TestClient:
+    return _client_with_factory()[0]
+
+
+def _client_with_factory() -> tuple[TestClient, sessionmaker]:
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -56,7 +61,7 @@ def _client() -> TestClient:
             db.close()
 
     app.dependency_overrides[get_session] = override_session
-    return TestClient(app)
+    return TestClient(app), factory
 
 
 def test_factor_list_exposes_builtin_metadata():
@@ -91,6 +96,10 @@ def test_factor_experiment_runs_and_returns_json_safe_summary():
     assert body["warnings"]
     assert any("not point-in-time" in warning for warning in body["warnings"])
     assert body["run_metadata"]["run_hash"]
+    assert len(body["run_metadata"]["run_hash"]) == 64
+    assert body["run_metadata"]["factor_implementation_version"] == "builtin-factor-lab-v1"
+    assert len(body["run_metadata"]["ohlcv_snapshot_fingerprint"]) == 64
+    assert len(body["run_metadata"]["experiment_fingerprint"]) == 64
     assert body["run_metadata"]["selected_symbol_count"] == 5
     assert body["run_metadata"]["selected_symbols"] == [
         "000001",
@@ -103,6 +112,107 @@ def test_factor_experiment_runs_and_returns_json_safe_summary():
     assert body["run_metadata"]["point_in_time"] is False
     assert body["run_metadata"]["degraded"] is True
     assert all(summary["n_dates"] >= 0 for summary in body["summaries"])
+
+
+def test_factor_experiment_persists_replay_inputs_summary_and_metadata():
+    client, factory = _client_with_factory()
+    payload = {
+        "symbol_source": "manual",
+        "symbols": ["000001", "000002", "000003", "000004", "000005"],
+        "factor_names": ["momentum_5d"],
+        "start_date": "2024-01-01",
+        "end_date": "2024-03-20",
+        "horizon": 5,
+        "n_groups": 5,
+    }
+
+    response = client.post("/api/factors/experiments/run", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    session = factory()
+    try:
+        experiment = session.scalar(select(FactorExperiment))
+        assert experiment is not None
+        assert experiment.experiment_fingerprint == body["run_metadata"]["experiment_fingerprint"]
+        assert json.loads(experiment.request_json) == {**payload, "pool_max_symbols": 100}
+        assert json.loads(experiment.response_summary_json)["summaries"] == body["summaries"]
+        metadata = json.loads(experiment.run_metadata_json)
+        assert metadata["ohlcv_snapshot_fingerprint"] == body["run_metadata"]["ohlcv_snapshot_fingerprint"]
+        assert metadata["run_hash"] == body["run_metadata"]["run_hash"]
+    finally:
+        session.close()
+
+
+def test_factor_run_hash_changes_when_used_ohlcv_snapshot_changes():
+    client, factory = _client_with_factory()
+    payload = {
+        "symbol_source": "manual",
+        "symbols": ["000001", "000002", "000003", "000004", "000005"],
+        "factor_names": ["momentum_5d"],
+        "start_date": "2024-01-01",
+        "end_date": "2024-03-20",
+        "horizon": 5,
+        "n_groups": 5,
+    }
+    first = client.post("/api/factors/experiments/run", json=payload)
+    assert first.status_code == 200
+
+    session = factory()
+    try:
+        bar = session.scalar(
+            select(DailyBar).where(
+                DailyBar.symbol == "000001",
+                DailyBar.trade_date == date(2024, 2, 1),
+            )
+        )
+        assert bar is not None
+        bar.close += 1.0
+        bar.high = max(bar.high, bar.close)
+        session.commit()
+    finally:
+        session.close()
+
+    second = client.post("/api/factors/experiments/run", json=payload)
+
+    assert second.status_code == 200
+    assert first.json()["run_metadata"]["ohlcv_snapshot_fingerprint"] != second.json()["run_metadata"]["ohlcv_snapshot_fingerprint"]
+    assert first.json()["run_metadata"]["run_hash"] != second.json()["run_metadata"]["run_hash"]
+    assert first.json()["run_metadata"]["experiment_fingerprint"] != second.json()["run_metadata"]["experiment_fingerprint"]
+
+
+def test_factor_run_hash_changes_when_adjustment_mode_changes():
+    client, factory = _client_with_factory()
+    payload = {
+        "symbol_source": "manual",
+        "symbols": ["000001", "000002", "000003", "000004", "000005"],
+        "factor_names": ["momentum_5d"],
+        "start_date": "2024-01-01",
+        "end_date": "2024-03-20",
+        "horizon": 5,
+        "n_groups": 5,
+    }
+    first = client.post("/api/factors/experiments/run", json=payload)
+    assert first.status_code == 200
+
+    session = factory()
+    try:
+        bar = session.scalar(
+            select(DailyBar).where(
+                DailyBar.symbol == "000001",
+                DailyBar.trade_date == date(2024, 2, 1),
+            )
+        )
+        assert bar is not None
+        bar.adj = "hfq"
+        session.commit()
+    finally:
+        session.close()
+
+    second = client.post("/api/factors/experiments/run", json=payload)
+
+    assert second.status_code == 200
+    assert first.json()["run_metadata"]["ohlcv_snapshot_fingerprint"] != second.json()["run_metadata"]["ohlcv_snapshot_fingerprint"]
 
 
 def test_factor_experiment_accepts_stock_name_in_manual_symbols():

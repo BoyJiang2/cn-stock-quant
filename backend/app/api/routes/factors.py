@@ -3,7 +3,10 @@ import json
 from datetime import date, timedelta
 from math import isfinite
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
@@ -17,7 +20,8 @@ from app.factors import (
     forward_returns,
     preprocess,
 )
-from app.research_cemetery import record_cemetery_entry
+from app.research_cemetery import factor_cemetery_reason, record_cemetery_entry
+from app.models.entities import FactorExperiment
 from app.schemas.factors import (
     FactorExperimentRequest,
     FactorExperimentResponse,
@@ -29,6 +33,8 @@ router = APIRouter()
 
 _LARGE_UNIVERSE_SYMBOLS = 1000
 _LARGE_EXPERIMENT_CELLS = 2_000_000
+_FACTOR_IMPLEMENTATION_VERSION = "builtin-factor-lab-v1"
+_OHLCV_COLUMNS = ["symbol", "trade_date", "open", "high", "low", "close", "volume", "amount", "adj"]
 
 
 def _finite(value) -> float | None:
@@ -50,6 +56,7 @@ def _factor_run_metadata(
     horizon: int,
     n_groups: int,
     bar_rows: int,
+    ohlcv_snapshot_fingerprint: str,
 ) -> dict[str, object]:
     payload = {
         "symbol_source": symbol_source,
@@ -61,6 +68,8 @@ def _factor_run_metadata(
         "label_end": label_end.isoformat(),
         "horizon": horizon,
         "n_groups": n_groups,
+        "factor_implementation_version": _FACTOR_IMPLEMENTATION_VERSION,
+        "ohlcv_snapshot_fingerprint": ohlcv_snapshot_fingerprint,
     }
     run_hash = hashlib.sha256(
         json.dumps(
@@ -69,7 +78,7 @@ def _factor_run_metadata(
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-    ).hexdigest()[:16]
+    ).hexdigest()
     symbol_hash = hashlib.sha256(
         json.dumps(
             selected_symbols,
@@ -96,6 +105,44 @@ def _factor_run_metadata(
         "degraded": True,
         "degraded_reasons": degraded_reasons,
     }
+
+
+def _stable_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _ohlcv_snapshot_fingerprint(bars: pd.DataFrame) -> str:
+    snapshot = bars.loc[:, _OHLCV_COLUMNS].copy()
+    snapshot["trade_date"] = pd.to_datetime(snapshot["trade_date"]).dt.strftime("%Y-%m-%d")
+    canonical = snapshot.sort_values(["trade_date", "symbol"], kind="stable").to_csv(
+        index=False,
+        lineterminator="\n",
+        float_format="%.17g",
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _experiment_fingerprint(
+    *,
+    request: dict[str, object],
+    run_metadata: dict[str, object],
+    summaries: list[dict[str, object]],
+) -> str:
+    return hashlib.sha256(
+        _stable_json(
+            {
+                "request": request,
+                "run_metadata": run_metadata,
+                "summaries": summaries,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 @router.get("", response_model=list[FactorMetadataOut])
@@ -140,6 +187,7 @@ def run_factor_experiment(
     if bars.empty:
         raise HTTPException(status_code=400, detail="No local daily bars for the requested experiment.")
 
+    ohlcv_snapshot_fingerprint = _ohlcv_snapshot_fingerprint(bars)
     run_metadata = _factor_run_metadata(
         symbol_source=payload.symbol_source,
         selected_symbols=symbols,
@@ -151,6 +199,7 @@ def run_factor_experiment(
         horizon=payload.horizon,
         n_groups=payload.n_groups,
         bar_rows=len(bars),
+        ohlcv_snapshot_fingerprint=ohlcv_snapshot_fingerprint,
     )
     factor_panel = FactorLab().compute(bars, [FactorSpec(name) for name in requested])
     labels = forward_returns(bars, horizons=(payload.horizon,))
@@ -217,24 +266,51 @@ def run_factor_experiment(
         key=lambda item: item.rankic_mean if item.rankic_mean is not None else float("-inf"),
         reverse=True,
     )
+    request_data = payload.model_dump(mode="json")
+    summary_data = [summary.model_dump(mode="json") for summary in summaries]
+    experiment_fingerprint = _experiment_fingerprint(
+        request=request_data,
+        run_metadata=run_metadata,
+        summaries=summary_data,
+    )
+    run_metadata["experiment_fingerprint"] = experiment_fingerprint
+    experiment_stmt = select(FactorExperiment).where(
+        FactorExperiment.experiment_fingerprint == experiment_fingerprint
+    )
+    experiment = session.scalar(experiment_stmt)
+    if experiment is None:
+        try:
+            with session.begin_nested():
+                experiment = FactorExperiment(
+                    experiment_fingerprint=experiment_fingerprint,
+                    request_json=_stable_json(request_data),
+                    response_summary_json=_stable_json(
+                        {
+                            "selected_symbols": symbols,
+                            "factor_count": len(requested),
+                            "horizon": payload.horizon,
+                            "n_groups": payload.n_groups,
+                            "summaries": summary_data,
+                        }
+                    ),
+                    run_metadata_json=_stable_json(run_metadata),
+                )
+                session.add(experiment)
+                session.flush()
+        except IntegrityError:
+            experiment = session.scalar(experiment_stmt)
+            if experiment is None:
+                raise
     for summary in summaries:
-        reasons: list[str] = []
-        if summary.n_dates < 20:
-            reasons.append(f"only {summary.n_dates} valid evaluation dates")
-        if summary.rankic_mean is None:
-            reasons.append("RankIC is unavailable")
-        elif summary.rankic_mean <= 0:
-            reasons.append(f"non-positive RankIC ({summary.rankic_mean:.4f})")
-        if reasons:
+        reason = factor_cemetery_reason(summary.model_dump(mode="json"))
+        if reason:
             record_cemetery_entry(
                 session,
                 research_type="factor",
                 subject_name=summary.name,
-                source_ref=str(run_metadata["run_hash"]),
-                source_fingerprint=hashlib.sha256(
-                    f"{run_metadata['run_hash']}:{summary.name}".encode("utf-8")
-                ).hexdigest(),
-                reason="; ".join(reasons),
+                source_ref=str(experiment.id),
+                source_fingerprint=experiment_fingerprint,
+                reason=reason,
                 metrics=summary.model_dump(mode="json"),
             )
     session.commit()

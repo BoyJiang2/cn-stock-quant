@@ -18,7 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import create_app
-from app.models.entities import BacktestRun, BacktestRunProvenance, Base, DailyBar, IndexDailyBar, NewsItem, Stock, TradingCalendar
+from app.models.entities import BacktestRun, BacktestRunProvenance, BacktestWalkForwardValidation, Base, DailyBar, IndexDailyBar, NewsItem, Stock, TradingCalendar
 from app.models.pit import IndexConstituent, SecurityName, SecuritySTStatus, SecurityStatus
 from app.schemas.backtest import BacktestRequest
 
@@ -312,6 +312,52 @@ def test_walk_forward_validation_records_non_pit_run_without_promoting_it():
     history = client.get(f"/api/backtests/{run_id}/walk-forward-validations")
     assert history.status_code == 200
     assert history.json()[0]["id"] == body["id"]
+
+
+def test_walk_forward_validation_and_cemetery_entry_are_atomic(monkeypatch):
+    from app.backtest import persistence
+
+    session_factory = _make_session_factory()
+    session = session_factory()
+    try:
+        session.add(
+            BacktestRun(
+                strategy_name="moving_average",
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 2, 1),
+                initial_cash=100_000,
+                final_equity=100_000,
+                total_return=0.0,
+                annual_return=0.0,
+                max_drawdown=0.0,
+                sharpe=0.0,
+            )
+        )
+        session.commit()
+        run_id = session.query(BacktestRun).one().id
+
+        def fail_cemetery_write(*args, **kwargs):
+            raise RuntimeError("cemetery write failed")
+
+        monkeypatch.setattr(persistence, "record_cemetery_entry", fail_cemetery_write)
+        try:
+            persistence.save_walk_forward_validation(
+                session,
+                backtest_run_id=run_id,
+                eligibility_status="not_eligible_insufficient_oos_history",
+                spec={"strategy_name": "moving_average"},
+                result={"aggregate": {}},
+                quality={"quality_flags": ["insufficient OOS history"], "window_count": 1},
+                source_provenance_fingerprint="p" * 64,
+            )
+        except RuntimeError as exc:
+            assert str(exc) == "cemetery write failed"
+        else:
+            raise AssertionError("the failed cemetery write should abort the validation transaction")
+
+        assert session.query(BacktestWalkForwardValidation).count() == 0
+    finally:
+        session.close()
 
 
 def test_walk_forward_validation_requires_a_local_calendar_for_pit_windows():

@@ -336,7 +336,7 @@ class MarketDataRepository:
 
     def daily_bars(self, symbols: list[str], start_date: date, end_date: date) -> pd.DataFrame:
         normalized_symbols = normalize_a_share_symbols(symbols)
-        columns = ["symbol", "trade_date", "open", "high", "low", "close", "volume", "amount"]
+        columns = ["symbol", "trade_date", "open", "high", "low", "close", "volume", "amount", "adj"]
         if not normalized_symbols:
             return pd.DataFrame(columns=columns)
         stmt = (
@@ -349,6 +349,7 @@ class MarketDataRepository:
                 DailyBar.close,
                 DailyBar.volume,
                 DailyBar.amount,
+                DailyBar.adj,
             )
             .where(DailyBar.symbol.in_(normalized_symbols), DailyBar.trade_date >= start_date, DailyBar.trade_date <= end_date)
             .order_by(DailyBar.trade_date, DailyBar.symbol)
