@@ -100,6 +100,12 @@ def backfill_noneligible_strategy_entries(session: Session) -> dict[str, int]:
 
 
 def factor_cemetery_reason(summary: dict) -> str | None:
+    screening_status = summary.get("screening_status")
+    screening_reasons = summary.get("screening_reasons")
+    if screening_status in {"rejected", "watch"} and isinstance(screening_reasons, list):
+        reasons = [reason for reason in screening_reasons if isinstance(reason, str)]
+        if reasons:
+            return f"{screening_status}: " + "; ".join(reasons)
     reasons: list[str] = []
     n_dates = summary.get("n_dates")
     if not isinstance(n_dates, int) or n_dates < 20:

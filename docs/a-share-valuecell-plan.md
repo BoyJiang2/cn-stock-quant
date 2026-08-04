@@ -157,6 +157,20 @@ that is constrained to the already risk-gated trade-plan draft.
   persistence cannot be reconstructed because their raw experiment payloads
   were never stored.
 
+### P6: Factor and Strategy Selection
+
+- [x] P6-1 Add deterministic `rejected` / `watch` / `candidate` triage to
+  factor experiments. Candidate means only that a factor merits the next
+  point-in-time rolling-OOS research stage; it is never a trade approval.
+- [x] P6-2 Expand only trailing, locally reproducible OHLCV factor families
+  and record their implementation versions with each experiment.
+- [ ] P6-3 Require cross-period stability, turnover/cost stress, and
+  point-in-time rolling-OOS evidence before a factor can enter a composite or
+  model feature set.
+- [ ] P6-4 Compare eligible factor candidates across market regimes and
+  retire factors whose live paper evidence materially diverges from OOS
+  expectations.
+
 ## Provider and Secret Policy
 
 - Runtime provider: OpenAI Responses API through a provider-neutral adapter.

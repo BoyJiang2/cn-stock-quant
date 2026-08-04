@@ -20,6 +20,7 @@ from app.factors import (
     forward_returns,
     preprocess,
 )
+from app.factors.screening import screen_factor_metrics
 from app.research_cemetery import factor_cemetery_reason, record_cemetery_entry
 from app.models.entities import FactorExperiment
 from app.schemas.factors import (
@@ -241,21 +242,34 @@ def run_factor_experiment(
         direction = FACTOR_DIRECTIONS[name]
         adjusted = preprocess(factor_panel[[name]])["standardized"][name] * direction
         report = evaluate(adjusted, label, n_groups=payload.n_groups)
+        rankic_mean = _finite(report["rankic_mean"])
+        rankic_ir = _finite(report["rankic_ir"])
+        long_short_return = _finite(report["long_short_return"])
+        long_short_turnover = _finite(report["long_short_turnover"])
+        screening_status, screening_reasons = screen_factor_metrics(
+            n_dates=report["n_dates"],
+            rankic_mean=rankic_mean,
+            rankic_ir=rankic_ir,
+            long_short_return=long_short_return,
+            long_short_turnover=long_short_turnover,
+        )
         summaries.append(
             FactorSummaryOut(
                 name=name,
                 direction=direction,
                 ic_mean=_finite(report["ic_mean"]),
                 ic_ir=_finite(report["ic_ir"]),
-                rankic_mean=_finite(report["rankic_mean"]),
-                rankic_ir=_finite(report["rankic_ir"]),
-                long_short_return=_finite(report["long_short_return"]),
-                long_short_turnover=_finite(report["long_short_turnover"]),
+                rankic_mean=rankic_mean,
+                rankic_ir=rankic_ir,
+                long_short_return=long_short_return,
+                long_short_turnover=long_short_turnover,
                 n_dates=report["n_dates"],
                 group_returns={
                     group: _finite(value)
                     for group, value in report["group_returns"].items()
                 },
+                screening_status=screening_status,
+                screening_reasons=screening_reasons,
             )
         )
         if summaries[-1].n_dates < 20:

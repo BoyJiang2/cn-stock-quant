@@ -391,6 +391,71 @@ def _price_rank(inputs: FactorInputs, window: int) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Additional OHLCV signals for candidate research
+# ---------------------------------------------------------------------------
+
+def _rsi(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Trailing simple-average RSI in the conventional 0..100 range."""
+    delta = inputs.close.diff()
+    average_gain = delta.clip(lower=0.0).rolling(window).mean()
+    average_loss = (-delta.clip(upper=0.0)).rolling(window).mean()
+    relative_strength = average_gain / average_loss.replace(0.0, np.nan)
+    rsi = 100.0 - 100.0 / (1.0 + relative_strength)
+    return rsi.mask((average_loss == 0.0) & (average_gain > 0.0), 100.0).mask(
+        (average_loss == 0.0) & (average_gain == 0.0), 50.0
+    )
+
+
+def _bollinger_zscore(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Close displacement from its trailing mean measured in standard deviations."""
+    mean = inputs.close.rolling(window).mean()
+    std = inputs.close.rolling(window).std().replace(0.0, np.nan)
+    return (inputs.close - mean) / std
+
+
+def _parkinson_volatility(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Range-based Parkinson volatility using only trailing daily high/low."""
+    log_range_squared = np.log(inputs.high / inputs.low.replace(0.0, np.nan)) ** 2
+    return np.sqrt(log_range_squared.rolling(window).mean() / (4.0 * np.log(2.0)))
+
+
+def _return_autocorrelation(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Lag-one autocorrelation of trailing close-to-close returns."""
+    returns = _simple_returns(inputs.close)
+    return returns.rolling(window).corr(returns.shift(1))
+
+
+def _obv_trend(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Windowed on-balance-volume trend, normalised by window volume."""
+    signed_volume = np.sign(_simple_returns(inputs.close)).fillna(0.0) * inputs.volume
+    obv = signed_volume.cumsum()
+    return (obv - obv.shift(window)) / inputs.volume.rolling(window).sum().replace(0.0, np.nan)
+
+
+def _volatility_contraction(inputs: FactorInputs, short: int, long: int) -> pd.DataFrame:
+    """Positive when short volatility is below long volatility (a contraction)."""
+    returns = _simple_returns(inputs.close)
+    short_vol = returns.rolling(short).std()
+    long_vol = returns.rolling(long).std().replace(0.0, np.nan)
+    return 1.0 - short_vol / long_vol
+
+
+def _volume_weighted_return(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Trailing return whose daily observations are weighted by traded amount."""
+    returns = _simple_returns(inputs.close)
+    numerator = (returns * inputs.amount).rolling(window).sum()
+    denominator = inputs.amount.rolling(window).sum().replace(0.0, np.nan)
+    return numerator / denominator
+
+
+def _gap_follow_through(inputs: FactorInputs, window: int) -> pd.DataFrame:
+    """Average product of overnight gap and same-day intraday follow-through."""
+    gap = inputs.open / inputs.close.shift(1).replace(0.0, np.nan) - 1.0
+    intraday = inputs.close / inputs.open.replace(0.0, np.nan) - 1.0
+    return (gap * intraday).rolling(window).mean()
+
+
+# ---------------------------------------------------------------------------
 # Risk-adjusted / return-distribution family
 # ---------------------------------------------------------------------------
 #
@@ -525,6 +590,16 @@ def default_registry() -> FactorRegistry:
     )
     reg.register("price_rank_20d", lambda inp, p: _price_rank(inp, 20))
 
+    # Additional OHLCV signals
+    reg.register("rsi_14d", lambda inp, p: _rsi(inp, 14))
+    reg.register("bollinger_zscore_20d", lambda inp, p: _bollinger_zscore(inp, 20))
+    reg.register("parkinson_volatility_20d", lambda inp, p: _parkinson_volatility(inp, 20))
+    reg.register("return_autocorr_20d", lambda inp, p: _return_autocorrelation(inp, 20))
+    reg.register("obv_trend_20d", lambda inp, p: _obv_trend(inp, 20))
+    reg.register("volatility_contraction_5d_20d", lambda inp, p: _volatility_contraction(inp, 5, 20))
+    reg.register("volume_weighted_return_20d", lambda inp, p: _volume_weighted_return(inp, 20))
+    reg.register("gap_follow_through_20d", lambda inp, p: _gap_follow_through(inp, 20))
+
     return reg
 
 
@@ -574,6 +649,14 @@ BUILTIN_FACTOR_NAMES: list[str] = [
     "trend_residual_20d",
     "volume_return_divergence_20d",
     "price_rank_20d",
+    "rsi_14d",
+    "bollinger_zscore_20d",
+    "parkinson_volatility_20d",
+    "return_autocorr_20d",
+    "obv_trend_20d",
+    "volatility_contraction_5d_20d",
+    "volume_weighted_return_20d",
+    "gap_follow_through_20d",
 ]
 
 # Direction used to orient evaluation so a higher adjusted value always means
@@ -626,4 +709,13 @@ FACTOR_DIRECTIONS: dict[str, int] = {
     "trend_residual_20d": -1,
     "volume_return_divergence_20d": 1,
     "price_rank_20d": 1,
+    # Additional OHLCV signals
+    "rsi_14d": 1,
+    "bollinger_zscore_20d": 1,
+    "parkinson_volatility_20d": -1,
+    "return_autocorr_20d": 1,
+    "obv_trend_20d": 1,
+    "volatility_contraction_5d_20d": 1,
+    "volume_weighted_return_20d": 1,
+    "gap_follow_through_20d": 1,
 }

@@ -36,6 +36,14 @@ _FACTOR_SAMPLE = [
     "volume_return_divergence_20d",
     "price_rank_20d",
     "reversal_10d",
+    "rsi_14d",
+    "bollinger_zscore_20d",
+    "parkinson_volatility_20d",
+    "return_autocorr_20d",
+    "obv_trend_20d",
+    "volatility_contraction_5d_20d",
+    "volume_weighted_return_20d",
+    "gap_follow_through_20d",
 ]
 
 

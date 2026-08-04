@@ -31,6 +31,8 @@ class FactorSummaryOut(BaseModel):
     long_short_turnover: float | None
     n_dates: int
     group_returns: dict[int, float | None]
+    screening_status: Literal["candidate", "watch", "rejected"] = "watch"
+    screening_reasons: list[str] = Field(default_factory=list)
 
 
 class FactorExperimentResponse(BaseModel):

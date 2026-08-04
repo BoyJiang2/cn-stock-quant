@@ -44,6 +44,22 @@ def test_second_batch_factors_registered_with_directions():
         assert FACTOR_DIRECTIONS[name] == direction
 
 
+def test_p6_ohlcv_factor_batch_registered_with_directions():
+    expected = {
+        "rsi_14d": 1,
+        "bollinger_zscore_20d": 1,
+        "parkinson_volatility_20d": -1,
+        "return_autocorr_20d": 1,
+        "obv_trend_20d": 1,
+        "volatility_contraction_5d_20d": 1,
+        "volume_weighted_return_20d": 1,
+        "gap_follow_through_20d": 1,
+    }
+    for name, direction in expected.items():
+        assert name in BUILTIN_FACTOR_NAMES
+        assert FACTOR_DIRECTIONS[name] == direction
+
+
 # ---------------------------------------------------------------------------
 # Momentum family
 # ---------------------------------------------------------------------------
@@ -389,6 +405,67 @@ def test_price_rank_20d_hand_calc(build_bars, factor_lab):
     assert math.isclose(_last_value(out, "000001", "price_rank_20d"), 1.0, rel_tol=1e-12)
     assert math.isclose(_last_value(out, "600000", "price_rank_20d"), 0.0, rel_tol=1e-12)
     assert math.isclose(_last_value(out, "300001", "price_rank_20d"), 0.5, rel_tol=1e-12)
+
+
+def test_rsi_14d_and_bollinger_zscore_hand_calc(build_bars, factor_lab):
+    # Fourteen consecutive +1% closes produce RSI=100. The final close is
+    # one sample standard deviation above the 20-day mean in the second case.
+    rsi_prices = [100.0]
+    for _ in range(14):
+        rsi_prices.append(rsi_prices[-1] * 1.01)
+    rsi = factor_lab.compute(build_bars({"000001": rsi_prices}), [FactorSpec("rsi_14d")])
+    assert math.isclose(_last_value(rsi, "000001", "rsi_14d"), 100.0, rel_tol=1e-12)
+
+    prices = [10.0] * 19 + [20.0]
+    bollinger = factor_lab.compute(
+        build_bars({"000001": prices}), [FactorSpec("bollinger_zscore_20d")]
+    )
+    expected = (20.0 - 10.5) / (math.sqrt(95.0 / 19.0))
+    assert math.isclose(
+        _last_value(bollinger, "000001", "bollinger_zscore_20d"), expected, rel_tol=1e-12
+    )
+
+
+def test_parkinson_volatility_and_volume_weighted_return_hand_calc(build_bars, factor_lab):
+    n = 21
+    bars = build_bars(
+        {"000001": [100.0 * (1.01**day) for day in range(n)]},
+        high={"000001": [102.0 * (1.01**day) for day in range(n)]},
+        low={"000001": [98.0 * (1.01**day) for day in range(n)]},
+        amount=1_000.0,
+    )
+    out = factor_lab.compute(
+        bars,
+        [FactorSpec("parkinson_volatility_20d"), FactorSpec("volume_weighted_return_20d")],
+    )
+    expected_parkinson = math.sqrt(math.log(102.0 / 98.0) ** 2 / (4.0 * math.log(2.0)))
+    assert math.isclose(
+        _last_value(out, "000001", "parkinson_volatility_20d"), expected_parkinson, rel_tol=1e-12
+    )
+    assert math.isclose(
+        _last_value(out, "000001", "volume_weighted_return_20d"), 0.01, rel_tol=1e-12
+    )
+
+
+def test_p6_factor_edge_cases_are_nan_or_zero_as_expected(build_bars, factor_lab):
+    # A constant price has undefined return autocorrelation and zero long
+    # volatility; zero volume leaves OBV normalisation undefined. A flat
+    # intraday path has zero gap follow-through.
+    bars = build_bars({"000001": [100.0] * 21}, volume=0.0)
+    out = factor_lab.compute(
+        bars,
+        [
+            FactorSpec("return_autocorr_20d"),
+            FactorSpec("obv_trend_20d"),
+            FactorSpec("volatility_contraction_5d_20d"),
+            FactorSpec("gap_follow_through_20d"),
+        ],
+    )
+    values = out.xs("000001", level="symbol").iloc[-1]
+    assert math.isnan(values["return_autocorr_20d"])
+    assert math.isnan(values["obv_trend_20d"])
+    assert math.isnan(values["volatility_contraction_5d_20d"])
+    assert math.isclose(values["gap_follow_through_20d"], 0.0, abs_tol=1e-12)
 
 
 def test_unknown_factor_raises(factor_lab, build_bars):
