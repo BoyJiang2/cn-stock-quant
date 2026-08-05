@@ -1,13 +1,12 @@
-import { Button, DatePicker, Input, Table, message } from "antd";
+import { AutoComplete, Button, DatePicker, Table, message } from "antd";
 import type { RangePickerProps } from "antd/es/date-picker";
 import dayjs from "dayjs";
 import { Search } from "lucide-react";
-import type { ChangeEvent } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import { KlineChart } from "../components/KlineChart";
-import type { DailyBar } from "../types";
+import type { DailyBar, Stock } from "../types";
 
 const { RangePicker } = DatePicker;
 
@@ -16,6 +15,8 @@ export function KlinePage() {
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs]>([dayjs().subtract(1, "year"), dayjs()]);
   const [bars, setBars] = useState<DailyBar[]>([]);
   const [loading, setLoading] = useState(false);
+  const [stockOptions, setStockOptions] = useState<{ value: string; label: string }[]>([]);
+  const searchRequestRef = useRef(0);
 
   const handleRangeChange: RangePickerProps["onChange"] = (dates) => {
     if (dates?.[0] && dates[1]) {
@@ -44,6 +45,29 @@ export function KlinePage() {
     }
   };
 
+  const searchStocks = async (value: string) => {
+    const keyword = value.trim();
+    if (!keyword) {
+      setStockOptions([]);
+      return;
+    }
+    const requestId = ++searchRequestRef.current;
+    try {
+      const response = await api.get<Stock[]>("/api/data/stocks", {
+        params: { keyword, limit: 20 }
+      });
+      if (requestId !== searchRequestRef.current) return;
+      setStockOptions(
+        response.data.map((stock) => ({
+          value: stock.symbol,
+          label: `${stock.name} (${stock.symbol})`
+        }))
+      );
+    } catch {
+      if (requestId === searchRequestRef.current) setStockOptions([]);
+    }
+  };
+
   useEffect(() => {
     loadBars().catch(() => undefined);
   }, []);
@@ -52,10 +76,17 @@ export function KlinePage() {
     <section className="page">
       <h1>K线查看</h1>
       <div className="toolbar">
-        <Input
-          onChange={(event: ChangeEvent<HTMLInputElement>) => setSymbol(event.target.value)}
-          onPressEnter={loadBars}
+        <AutoComplete
+          allowClear
+          onSearch={searchStocks}
+          onSelect={(value) => setSymbol(value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") loadBars();
+          }}
+          options={stockOptions}
+          placeholder="输入股票代码或名称"
           value={symbol}
+          onChange={setSymbol}
         />
         <RangePicker onChange={handleRangeChange} value={range} />
         <Button icon={<Search size={16} />} loading={loading} onClick={loadBars} type="primary">
@@ -84,4 +115,3 @@ export function KlinePage() {
     </section>
   );
 }
-
